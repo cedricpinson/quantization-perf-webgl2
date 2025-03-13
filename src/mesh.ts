@@ -6,18 +6,21 @@ export interface Mesh {
     tangents: Float32Array;
     uvs: Float32Array;
     indices: Uint32Array;
+    vertexBytes: number;
 }
 
 export type ShapeType = 'sphere' | 'wavySphere' | 'roundedBox';
 
 
 export function generateSphere(resolution: number): Mesh {
-    const positions: number[] = [];
-    const normals: number[] = [];
-    const tangents: number[] = [];
-    const uvs: number[] = [];
-    const indices: number[] = [];
+    const numVertices = (resolution + 1) * (resolution + 1);
+    const positions: Float32Array = new Float32Array(numVertices * 3);
+    const normals: Float32Array = new Float32Array(numVertices * 3);
+    const tangents: Float32Array = new Float32Array(numVertices * 4);
+    const uvs: Float32Array = new Float32Array(numVertices * 2);
+    const indices: Uint32Array = new Uint32Array(resolution * resolution * 6);
 
+    let index = 0;
     // Generate vertices
     for (let lat = 0; lat <= resolution; lat++) {
         const theta = (lat * Math.PI) / resolution;
@@ -34,40 +37,56 @@ export function generateSphere(resolution: number): Mesh {
             const y = cosTheta;
             const z = sinPhi * sinTheta;
 
-            positions.push(x, y, z);
+            positions[index * 3] = x;
+            positions[index * 3 + 1] = y;
+            positions[index * 3 + 2] = z;
 
             // Normal (same as position for unit sphere)
-            normals.push(x, y, z);
+            normals[index * 3] = x;
+            normals[index * 3 + 1] = y;
+            normals[index * 3 + 2] = z;
 
             // Tangent (using cross product with up vector)
             const tx = -z;
             const ty = 0;
             const tz = x;
             const tl = Math.sqrt(tx * tx + ty * ty + tz * tz);
-            tangents.push(tx / tl, ty / tl, tz / tl, 1.0);
+            tangents[index * 4] = tx / tl;
+            tangents[index * 4 + 1] = ty / tl;
+            tangents[index * 4 + 2] = tz / tl;
+            tangents[index * 4 + 3] = 1.0;
 
             // UV coordinates
-            uvs.push(lon / resolution, lat / resolution);
+            uvs[index * 2] = lon / resolution;
+            uvs[index * 2 + 1] = lat / resolution;
+            index++;
         }
     }
 
     // Generate indices
+    index = 0;
     for (let lat = 0; lat < resolution; lat++) {
         for (let lon = 0; lon < resolution; lon++) {
             const first = lat * (resolution + 1) + lon;
             const second = first + resolution + 1;
 
-            indices.push(first, second, first + 1);
-            indices.push(second, second + 1, first + 1);
+            indices[index] = first;
+            indices[index + 1] = second;
+            indices[index + 2] = first + 1;
+            indices[index + 3] = second;
+            indices[index + 4] = second + 1;
+            indices[index + 5] = first + 1;
+            index += 6;
         }
     }
 
     return {
-        positions: new Float32Array(positions),
-        normals: new Float32Array(normals),
-        tangents: new Float32Array(tangents),
-        uvs: new Float32Array(uvs),
-        indices: new Uint32Array(indices)
+        positions: positions,
+        normals: normals,
+        tangents: tangents,
+        uvs: uvs,
+        indices: indices,
+        vertexBytes: 3 * 4 + 3 * 4 + 4 * 4 + 2 * 4
     };
 }
 
@@ -153,7 +172,8 @@ export function generateWavySphere(resolution: number): Mesh {
         normals: normals,
         tangents: tangents,
         uvs: uvs,
-        indices: indices
+        indices: indices,
+        vertexBytes: 3 * 4 + 3 * 4 + 4 * 4 + 2 * 4
     };
 }
 
@@ -299,7 +319,8 @@ export function generateRoundedBox(resolution: number): Mesh {
         normals: new Float32Array(normals),
         tangents: new Float32Array(tangents),
         uvs: new Float32Array(uvs),
-        indices: new Uint32Array(indices)
+        indices: new Uint32Array(indices),
+        vertexBytes: 3 * 4 + 3 * 4 + 4 * 4 + 2 * 4
     };
 }
 

@@ -1,10 +1,11 @@
-import { mat4, vec3 } from 'gl-matrix';
-import { setupUI } from './ui';
+import { mat4 } from 'gl-matrix';
+import { Pane } from 'tweakpane';
+import { ShapeType } from './mesh';
+import { GpuUncompressedMesh, GpuQuantizedMesh } from './gpu-mesh';
+import { PerformanceMonitor } from './performance';
 import {
     createShader,
     createProgram,
-    createBuffer,
-    createIndexBuffer,
     createTexture,
     generateRandomTexture,
     generateRandomNormalMap,
@@ -15,159 +16,63 @@ import {
     quantizedVertexShader,
     fragmentShader
 } from './shaders';
-
 import { generateMesh } from './mesh';
-import { ShapeType } from './mesh';
 
-interface Mesh {
-    positions: Float32Array;
-    normals: Float32Array;
-    tangents: Float32Array;
-    uvs: Float32Array;
-    indices: Uint32Array;
+interface UIParams {
+    resolution: number;
+    rotationSpeed: number;
+    useQuantizedMesh: boolean;
+    shape: ShapeType;
+    isPaused: boolean;
 }
 
-interface QuantizedMeshCompressedData {
-    // - Positions: 3x16bits (quantized on mesh bounding box)
-    // - Normals: 2x16bits (octahedral encoding)
-    // - Tangents: 1x16bits (1 bit sign + 15 bits angle)
-    // - UVs: 2x16bits (quantized 0-1 range)
-    data: Uint16Array;
-    index: Uint32Array;
-}
-
-interface QuantizedMesh {
-    compressedData: QuantizedMeshCompressedData | null;
-    positionMin: vec3;
-    positionMax: vec3;
-}
-
-interface UncompressedBuffers {
-    position: WebGLBuffer;
-    normal: WebGLBuffer;
-    tangent: WebGLBuffer;
-    uv: WebGLBuffer;
-    index: WebGLBuffer;
-}
-
-interface QuantizedBuffers {
-    data: WebGLBuffer;
-    index: WebGLBuffer;
-}
-
-interface GpuUncompressedMesh {
-    buffers: UncompressedBuffers;
-    locations: {
-        position: number;
-        normal: number;
-        tangent: number;
-        uv: number;
-    };
-}
-
-interface GpuQuantizedMesh {
-    buffers: QuantizedBuffers;
-    locations: {
-        positionMin: WebGLUniformLocation | null;
-        positionMax: WebGLUniformLocation | null;
-        compressedData: number[];
-    };
-}
-
-function quantizeMesh(mesh: Mesh): QuantizedMesh {
-    const { positions, normals, tangents, uvs } = mesh;
-    const vertexCount = positions.length / 3;
-    const compressedData = new Uint16Array(vertexCount * 8); // 4 vec2 per vertex or 8x16bits
-
-    // Find position bounds
-    const positionMin = vec3.fromValues(Infinity, Infinity, Infinity);
-    const positionMax = vec3.fromValues(-Infinity, -Infinity, -Infinity);
-    for (let i = 0; i < positions.length; i += 3) {
-        positionMin[0] = Math.min(positionMin[0], positions[i]);
-        positionMin[1] = Math.min(positionMin[1], positions[i + 1]);
-        positionMin[2] = Math.min(positionMin[2], positions[i + 2]);
-        positionMax[0] = Math.max(positionMax[0], positions[i]);
-        positionMax[1] = Math.max(positionMax[1], positions[i + 1]);
-        positionMax[2] = Math.max(positionMax[2], positions[i + 2]);
-    }
-
-    // Quantize positions to 16 bits
-    const range = vec3.sub(vec3.create(), positionMax, positionMin);
-    for (let i = 0; i < vertexCount; i++) {
-        const posIdx = i * 3;
-        const tanIdx = i * 4;
-        const uvIdx = i * 2;
-        const outIdx = i * 8;
-
-        // Quantize positions to 16 bits
-        const px = (positions[posIdx] - positionMin[0]) / range[0];
-        const py = (positions[posIdx + 1] - positionMin[1]) / range[1];
-        const pz = (positions[posIdx + 2] - positionMin[2]) / range[2];
-
-        compressedData[outIdx] = px * 65535;
-        compressedData[outIdx + 1] = py * 65535;
-
-        // Encode position.z and tangent angle+sign
-        compressedData[outIdx + 2] = pz * 65535;
-
-        // Calculate tangent angle
-        const normal = vec3.fromValues(normals[posIdx], normals[posIdx + 1], normals[posIdx + 2]);
-        const tangent = vec3.fromValues(tangents[tanIdx], tangents[tanIdx + 1], tangents[tanIdx + 2]);
-        const bitangent = vec3.cross(vec3.create(), normal, tangent);
-        vec3.normalize(bitangent, bitangent);
-
-        const angle = Math.atan2(
-            vec3.dot(tangent, vec3.cross(vec3.create(), normal, bitangent)),
-            vec3.dot(tangent, bitangent)
-        );
-
-        const normalizedAngle = ((angle + Math.PI) / (2 * Math.PI));
-        const quantizedAngle = (normalizedAngle * 32767) | 0 & 0x7FFF;
-        const tangentSign = tangents[tanIdx + 3] > 0 ? 1 : 0;
-        compressedData[outIdx + 3] = (tangentSign << 15) | quantizedAngle;
-
-        // Encode normal using octahedral encoding
-        const nx = normals[posIdx];
-        const ny = normals[posIdx + 1];
-        const nz = normals[posIdx + 2];
-        const invL1Norm = 1 / (Math.abs(nx) + Math.abs(ny) + Math.abs(nz));
-
-        let octX = nx * invL1Norm;
-        let octY = ny * invL1Norm;
-
-        if (nz < 0) {
-            const temp = octX;
-            octX = (1 - Math.abs(octY)) * (octX >= 0 ? 1 : -1);
-            octY = (1 - Math.abs(temp)) * (octY >= 0 ? 1 : -1);
-        }
-
-        compressedData[outIdx + 4] = ((octX * 0.5 + 0.5) * 65535) | 0;
-        compressedData[outIdx + 5] = ((octY * 0.5 + 0.5) * 65535) | 0;
-
-        // Quantize UVs to 16 bits
-        compressedData[outIdx + 6] = (uvs[uvIdx] * 65535) | 0;
-        compressedData[outIdx + 7] = (uvs[uvIdx + 1] * 65535) | 0;
-    }
+function getUrlParams(): Partial<UIParams> {
+    const params = new URLSearchParams(window.location.search);
+    const resolution = params.get('resolution');
+    const shape = params.get('shape') as ShapeType | null;
+    const useQuantizedMesh = params.get('useQuantizedMesh');
+    const rotationSpeed = params.get('rotationSpeed');
+    const isPaused = params.get('isPaused');
 
     return {
-        compressedData: { data: compressedData, index: mesh.indices },
-        positionMin,
-        positionMax
+        resolution: resolution ? Math.min(Math.max(parseInt(resolution), 512), 8192) : undefined,
+        shape: shape && ['sphere', 'wavySphere', 'roundedBox'].includes(shape) ? shape : undefined,
+        useQuantizedMesh: useQuantizedMesh ? useQuantizedMesh === 'true' : undefined,
+        rotationSpeed: rotationSpeed ? parseFloat(rotationSpeed) : undefined,
+        isPaused: isPaused ? isPaused === 'true' : undefined
     };
+}
+
+function updateUrlParams(params: UIParams) {
+    const urlParams = new URLSearchParams(window.location.search);
+    Object.entries(params).forEach(([key, value]) => {
+        if (value !== undefined) {
+            urlParams.set(key, String(value));
+        } else {
+            urlParams.delete(key);
+        }
+    });
+    window.history.replaceState({}, '', `${window.location.pathname}?${urlParams.toString()}`);
 }
 
 interface MeshState {
-    currentMesh: Mesh | null;
-    currentQuantizedMesh: QuantizedMesh | null;
-    GpuUncompressedMesh: GpuUncompressedMesh | null;
-    GpuQuantizedMesh: GpuQuantizedMesh | null;
+    gpuUncompressedMesh: GpuUncompressedMesh | null;
+    gpuQuantizedMesh: GpuQuantizedMesh | null;
     lastResolution: number;
     lastShape: ShapeType | null;
-    numIndices: number;
 }
 
 function main() {
     const canvas = document.querySelector('canvas')!;
+
+    const desiredWidth = 800;
+    const desiredHeight = 600;
+    const devicePixelRatio = Math.min(window.devicePixelRatio || 1, 1.5);
+    canvas.width = desiredWidth * devicePixelRatio;
+    canvas.height = desiredHeight * devicePixelRatio;
+    canvas.style.width = `${desiredWidth}px`;
+    canvas.style.height = `${desiredHeight}px`;
+
     const gl = canvas.getContext('webgl2')!;
 
     if (!gl) {
@@ -175,7 +80,65 @@ function main() {
         return;
     }
 
-    const { params, stats, pane } = setupUI();
+    // Create performance monitor
+    const performance = new PerformanceMonitor(gl);
+
+    // Get URL parameters
+    const urlParams = getUrlParams();
+    const params: UIParams = {
+        resolution: urlParams.resolution ?? 512,
+        rotationSpeed: urlParams.rotationSpeed ?? 0.5,
+        useQuantizedMesh: urlParams.useQuantizedMesh ?? false,
+        shape: urlParams.shape ?? 'sphere',
+        isPaused: urlParams.isPaused ?? false
+    };
+
+    // Get the controls container
+    const controlsContainer = document.getElementById('controls');
+    if (!controlsContainer) throw new Error('Controls container not found');
+
+    // Create and configure Tweakpane
+    const pane = new Pane({
+        container: controlsContainer,
+        title: 'Controls'
+    });
+
+    // Add controls with proper styling
+    pane.addBinding(params, 'resolution', {
+        min: 512,
+        max: 8192,
+        step: 512,
+        label: 'Resolution'
+    });
+
+    pane.addBinding(params, 'shape', {
+        options: {
+            'Sphere': 'sphere',
+            'Wavy Sphere': 'wavySphere',
+            'Rounded Box': 'roundedBox'
+        },
+        label: 'Shape'
+    });
+
+    pane.addBinding(params, 'rotationSpeed', {
+        min: 0,
+        max: 2,
+        step: 0.1,
+        label: 'Rotation Speed'
+    });
+
+    pane.addBinding(params, 'useQuantizedMesh', {
+        label: 'Use Quantized Mesh'
+    });
+
+    pane.addBinding(params, 'isPaused', {
+        label: 'Pause'
+    });
+
+    // Update URL when parameters change
+    pane.on('change', () => {
+        updateUrlParams(params);
+    });
 
     // Create shaders and programs
     const uncompressedProgram = createProgram(
@@ -202,48 +165,33 @@ function main() {
 
     // Add buffer tracking
     const meshState: MeshState = {
-        currentMesh: null,
-        currentQuantizedMesh: null,
-        GpuUncompressedMesh: null,
-        GpuQuantizedMesh: null,
-        numIndices: 0,
+        gpuUncompressedMesh: null,
+        gpuQuantizedMesh: null,
         lastResolution: -1,
         lastShape: null
     };
 
-    // Helper function to delete buffers
-    function deleteBuffers(gl: WebGL2RenderingContext, buffers: UncompressedBuffers | QuantizedBuffers) {
-        for (const key in buffers) {
-            const buffer = (buffers as any)[key] as WebGLBuffer;
-            if (buffer) {
-                gl.deleteBuffer(buffer);
-            }
-        }
-    }
-
     function updateMesh(state: MeshState) {
-        if ((params.useQuantizedMesh && state.GpuQuantizedMesh === null) ||
-            (!params.useQuantizedMesh && state.GpuUncompressedMesh === null) ||
+        if ((params.useQuantizedMesh && state.gpuQuantizedMesh === null) ||
+            (!params.useQuantizedMesh && state.gpuUncompressedMesh === null) ||
             state.lastResolution !== params.resolution || state.lastShape !== params.shape) {
-            // Delete existing buffers
-            if (state.GpuUncompressedMesh) {
-                deleteBuffers(gl, state.GpuUncompressedMesh.buffers);
+            // Clean up existing GPU meshes
+            if (state.gpuUncompressedMesh) {
+                state.gpuUncompressedMesh.cleanup(gl);
             }
-            if (state.GpuQuantizedMesh) {
-                deleteBuffers(gl, state.GpuQuantizedMesh.buffers);
+            if (state.gpuQuantizedMesh) {
+                state.gpuQuantizedMesh.cleanup(gl);
             }
-            state.GpuQuantizedMesh = null;
-            state.GpuUncompressedMesh = null;
-
-            // Clear current meshes
-            state.currentMesh = null;
-            state.currentQuantizedMesh = null;
+            state.gpuQuantizedMesh = null;
+            state.gpuUncompressedMesh = null;
 
             // Generate new meshes
-            state.currentMesh = generateMesh(params.shape, params.resolution);
-            console.log(`using mesh with ${state.currentMesh.positions.length / 3} vertices and ${state.currentMesh.indices.length / 3} triangles`);
+            const currentMesh = generateMesh(params.shape, params.resolution);
+            console.log(`using mesh with ${currentMesh.positions.length / 3} vertices and ${currentMesh.indices.length / 3} triangles`);
             if (params.useQuantizedMesh) {
-                state.currentQuantizedMesh = quantizeMesh(state.currentMesh);
+                state.gpuQuantizedMesh = new GpuQuantizedMesh(gl, quantizedProgram, currentMesh);
+            } else {
+                state.gpuUncompressedMesh = new GpuUncompressedMesh(gl, uncompressedProgram, currentMesh);
             }
 
             state.lastResolution = params.resolution;
@@ -251,120 +199,15 @@ function main() {
         }
     }
 
-    function setupUncompressedMesh(state: MeshState): number {
-
-        gl.useProgram(uncompressedProgram);
-
-        // Create buffers if they don't exist
-        if (!state.GpuUncompressedMesh) {
-            if (!state.currentMesh) throw new Error('currentMesh is null');
-            const positionBuffer = createBuffer(gl, state.currentMesh.positions, gl.STATIC_DRAW);
-            const normalBuffer = createBuffer(gl, state.currentMesh.normals, gl.STATIC_DRAW);
-            const tangentBuffer = createBuffer(gl, state.currentMesh.tangents, gl.STATIC_DRAW);
-            const uvBuffer = createBuffer(gl, state.currentMesh.uvs, gl.STATIC_DRAW);
-            const indexBuffer = createIndexBuffer(gl, state.currentMesh.indices, gl.STATIC_DRAW);
-
-            state.GpuUncompressedMesh = {
-                buffers: {
-                    position: positionBuffer,
-                    normal: normalBuffer,
-                    tangent: tangentBuffer,
-                    uv: uvBuffer,
-                    index: indexBuffer
-                },
-                locations: {
-                    position: gl.getAttribLocation(uncompressedProgram, 'aPosition'),
-                    normal: gl.getAttribLocation(uncompressedProgram, 'aNormal'),
-                    tangent: gl.getAttribLocation(uncompressedProgram, 'aTangent'),
-                    uv: gl.getAttribLocation(uncompressedProgram, 'aUV')
-                }
-            };
-            state.numIndices = state.currentMesh.indices.length;
-            state.currentMesh = null;
-        }
-
-        gl.bindBuffer(gl.ARRAY_BUFFER, state.GpuUncompressedMesh.buffers.position);
-        gl.enableVertexAttribArray(state.GpuUncompressedMesh.locations.position);
-        gl.vertexAttribPointer(state.GpuUncompressedMesh.locations.position, 3, gl.FLOAT, false, 0, 0);
-
-        gl.bindBuffer(gl.ARRAY_BUFFER, state.GpuUncompressedMesh.buffers.normal);
-        gl.enableVertexAttribArray(state.GpuUncompressedMesh.locations.normal);
-        gl.vertexAttribPointer(state.GpuUncompressedMesh.locations.normal, 3, gl.FLOAT, false, 0, 0);
-
-        gl.bindBuffer(gl.ARRAY_BUFFER, state.GpuUncompressedMesh.buffers.tangent);
-        gl.enableVertexAttribArray(state.GpuUncompressedMesh.locations.tangent);
-        gl.vertexAttribPointer(state.GpuUncompressedMesh.locations.tangent, 4, gl.FLOAT, false, 0, 0);
-
-        gl.bindBuffer(gl.ARRAY_BUFFER, state.GpuUncompressedMesh.buffers.uv);
-        gl.enableVertexAttribArray(state.GpuUncompressedMesh.locations.uv);
-        gl.vertexAttribPointer(state.GpuUncompressedMesh.locations.uv, 2, gl.FLOAT, false, 0, 0);
-
-        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, state.GpuUncompressedMesh.buffers.index);
-
-        return state.numIndices;
-    }
-
-    function setupQuantizedMesh(state: MeshState): number {
-
-        gl.useProgram(quantizedProgram);
-
-        // Create buffers if they don't exist
-        if (!state.GpuQuantizedMesh) {
-            if (!state.currentQuantizedMesh) throw new Error('currentQuantizedMesh is null');
-            const dataBuffer = createBuffer(gl, state.currentQuantizedMesh.compressedData?.data ?? new Uint16Array(), gl.STATIC_DRAW);
-            const indexBuffer = createIndexBuffer(gl, state.currentQuantizedMesh.compressedData?.index ?? new Uint32Array(), gl.STATIC_DRAW);
-
-            // compute locations
-            let locations = {
-                positionMin: gl.getUniformLocation(quantizedProgram, 'uPositionMin'),
-                positionMax: gl.getUniformLocation(quantizedProgram, 'uPositionMax'),
-                compressedData: [] as GLint[]
-            };
-
-            for (let i = 0; i < 4; i++) {
-                const loc = gl.getAttribLocation(quantizedProgram, `aCompressedData${i}`);
-                locations.compressedData.push(loc);
-            }
-
-
-            state.GpuQuantizedMesh = {
-                buffers: {
-                    data: dataBuffer,
-                    index: indexBuffer
-                },
-                locations: locations
-            };
-            state.numIndices = state.currentQuantizedMesh.compressedData?.index.length ?? 0;
-            state.currentQuantizedMesh.compressedData = null;
-        }
-
-
-        // Set up vertex attributes for compressed data
-        gl.bindBuffer(gl.ARRAY_BUFFER, state.GpuQuantizedMesh.buffers.data);
-
-        // Use stored locations
-        for (const loc of state.GpuQuantizedMesh.locations.compressedData) {
-            gl.enableVertexAttribArray(loc);
-            gl.vertexAttribIPointer(loc, 2, gl.UNSIGNED_SHORT, 16, loc * 4);
-        }
-
-
-        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, state.GpuQuantizedMesh.buffers.index);
-
-        // Set position bounds uniforms using stored locations
-        // @ts-ignore
-        gl.uniform3fv(state.GpuQuantizedMesh.locations.positionMin, state.currentQuantizedMesh.positionMin);
-        // @ts-ignore
-        gl.uniform3fv(state.GpuQuantizedMesh.locations.positionMax, state.currentQuantizedMesh.positionMax);
-
-        return state.numIndices;
-    }
-
     let rotation = 0;
-    let animationFrameId: number | null = null;
 
     function render() {
-        stats.begin();
+        if (params.isPaused) {
+            requestAnimationFrame(() => render());
+            return;
+        }
+
+        performance.beginFrame();
 
         updateMesh(meshState);
         resizeCanvasToDisplaySize(canvas);
@@ -372,14 +215,10 @@ function main() {
 
         gl.enable(gl.DEPTH_TEST);
         gl.frontFace(gl.CW);
-        if (params.doubleSided) {
-            gl.disable(gl.CULL_FACE);
-        } else {
-            gl.enable(gl.CULL_FACE);
-            gl.cullFace(gl.BACK);
-        }
+        gl.enable(gl.CULL_FACE);
+        gl.cullFace(gl.BACK);
 
-        gl.clearColor(0.1, 0.1, 0.1, 1.0);
+        gl.clearColor(0.0, 0.0, 0.0, 1.0);
         gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
         if (!params.isPaused) {
@@ -396,10 +235,6 @@ function main() {
         mat4.transpose(normalMatrix, normalMatrix);
 
         const program = params.useQuantizedMesh ? quantizedProgram : uncompressedProgram;
-        const indexCount = params.useQuantizedMesh ? setupQuantizedMesh(meshState) : setupUncompressedMesh(meshState);
-
-        if (!indexCount) return;
-
         gl.useProgram(program);
 
         // Set uniforms
@@ -423,28 +258,35 @@ function main() {
         gl.bindTexture(gl.TEXTURE_2D, normalTexture);
         gl.uniform1i(normalMapLoc, 1);
 
-        gl.drawElements(gl.TRIANGLES, indexCount, gl.UNSIGNED_INT, 0);
-
-        stats.end();
-
-        // Only request next frame if not paused
-        if (!params.isPaused) {
-            animationFrameId = requestAnimationFrame(render);
+        // Set up and draw mesh
+        let indexCount: number;
+        if (params.useQuantizedMesh) {
+            indexCount = meshState.gpuQuantizedMesh?.bind(gl) ?? 0;
+        } else {
+            indexCount = meshState.gpuUncompressedMesh?.bind(gl) ?? 0;
         }
+
+        if (indexCount > 0) {
+            gl.drawElements(gl.TRIANGLES, indexCount, gl.UNSIGNED_INT, 0);
+        }
+
+        performance.endFrame();
+        performance.checkQueryResults();
+
+        // Update performance display if needed
+        if (performance.shouldUpdateDisplay()) {
+            const numVertices = params.useQuantizedMesh ? meshState.gpuQuantizedMesh?.numVertices ?? 0 : meshState.gpuUncompressedMesh?.numVertices ?? 0;
+            const numTriangles = params.useQuantizedMesh ? meshState.gpuQuantizedMesh?.numIndices ?? 0 : meshState.gpuUncompressedMesh?.numIndices ?? 0;
+            const vertexBytes = params.useQuantizedMesh ? meshState.gpuQuantizedMesh?.vertexBytes ?? 0 : meshState.gpuUncompressedMesh?.vertexBytes ?? 0;
+            performance.updateDisplay(numVertices, numTriangles, vertexBytes);
+        }
+
+        requestAnimationFrame(() => render());
     }
 
     // Start the render loop
     render();
 
-    // Add a listener for the pause parameter
-    pane.on('change', (ev: any) => {
-        if (ev.target.path === 'isPaused') {
-            if (!params.isPaused && !animationFrameId) {
-                // Resume rendering
-                render();
-            }
-        }
-    });
 
     // Example: function to change shape
     function setShape(shape: ShapeType) {
@@ -474,12 +316,13 @@ function main() {
 
     // Clean up resources when the page is unloaded
     window.addEventListener('unload', () => {
-        if (meshState.GpuUncompressedMesh && meshState.GpuUncompressedMesh.buffers) {
-            deleteBuffers(gl, meshState.GpuUncompressedMesh.buffers);
+        if (meshState.gpuUncompressedMesh) {
+            meshState.gpuUncompressedMesh.cleanup(gl);
         }
-        if (meshState.GpuQuantizedMesh && meshState.GpuQuantizedMesh.buffers) {
-            deleteBuffers(gl, meshState.GpuQuantizedMesh.buffers);
+        if (meshState.gpuQuantizedMesh) {
+            meshState.gpuQuantizedMesh.cleanup(gl);
         }
+        performance.cleanup();
     });
 }
 
