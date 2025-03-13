@@ -1,4 +1,4 @@
-import { vec2, vec3 } from 'gl-matrix';
+import { vec3 } from 'gl-matrix';
 
 export interface Mesh {
     positions: Float32Array;
@@ -185,40 +185,44 @@ export function generateRoundedBox(resolution: number): Mesh {
             start: vec3.fromValues(0.5, -0.5, 0.5),
             right: vec3.fromValues(0, 0, -1),
             up: vec3.fromValues(0, 1, 0),
+            uvIndex: [2, 1]
         },
         // Negative X
         {
             start: vec3.fromValues(-0.5, -0.5, -0.5),
             right: vec3.fromValues(0, 0, 1),
             up: vec3.fromValues(0, 1, 0),
+            uvIndex: [2, 1]
         },
         // Positive Y
         {
             start: vec3.fromValues(-0.5, 0.5, 0.5),
             right: vec3.fromValues(1, 0, 0),
             up: vec3.fromValues(0, 0, -1),
+            uvIndex: [0, 2]
         },
         // Negative Y
         {
             start: vec3.fromValues(-0.5, -0.5, -0.5),
             right: vec3.fromValues(1, 0, 0),
             up: vec3.fromValues(0, 0, 1),
+            uvIndex: [0, 2]
         },
         // Positive Z
         {
             start: vec3.fromValues(-0.5, -0.5, 0.5),
             right: vec3.fromValues(1, 0, 0),
             up: vec3.fromValues(0, 1, 0),
+            uvIndex: [0, 1]
         },
         // Negative Z
         {
             start: vec3.fromValues(0.5, -0.5, -0.5),
             right: vec3.fromValues(-1, 0, 0),
             up: vec3.fromValues(0, 1, 0),
+            uvIndex: [0, 1]
         },
     ];
-
-    let faceGeometries: { positions: number[], normals: number[] }[] = [];
 
     function grid(
         start: vec3,
@@ -228,8 +232,10 @@ export function generateRoundedBox(resolution: number): Mesh {
         height: number,
         widthSteps: number,
         heightSteps: number,
-        indices: number[], // data will be pushed to indices and positions
-        positions: number[] // data will be pushed to positions
+        indices: Uint32Array, // data will be pushed to indices and positions
+        positions: Float32Array, // data will be pushed to positions
+        indexOffset: number,
+        vertexOffset: number
     ): void {
 
         // Traverse the face.
@@ -250,13 +256,32 @@ export function generateRoundedBox(resolution: number): Mesh {
 
                 // Store the six vertices of the two triangles composing this quad.
                 //positions.push(pa, pb, pc, pa, pc, pd);
-                let index = positions.length;
-                positions.push(
-                    pa[0], pa[1], pa[2],
-                    pb[0], pb[1], pb[2],
-                    pc[0], pc[1], pc[2],
-                    pd[0], pd[1], pd[2]);
-                indices.push(index, index + 1, index + 2, index, index + 2, index + 3);
+                const localQuadIndex = (x * heightSteps + y);
+                const vertexIndex = vertexOffset + localQuadIndex * 4;
+                const vertexIndexComponent = (vertexOffset + localQuadIndex * 4) * 3;
+                positions[vertexIndexComponent + 0] = pa[0];
+                positions[vertexIndexComponent + 1] = pa[1];
+                positions[vertexIndexComponent + 2] = pa[2];
+
+                positions[vertexIndexComponent + 3] = pb[0];
+                positions[vertexIndexComponent + 4] = pb[1];
+                positions[vertexIndexComponent + 5] = pb[2];
+
+                positions[vertexIndexComponent + 6] = pc[0];
+                positions[vertexIndexComponent + 7] = pc[1];
+                positions[vertexIndexComponent + 8] = pc[2];
+
+                positions[vertexIndexComponent + 9] = pd[0];
+                positions[vertexIndexComponent + 10] = pd[1];
+                positions[vertexIndexComponent + 11] = pd[2];
+
+                const triangleIndex = indexOffset + localQuadIndex * 6;
+                indices[triangleIndex + 0] = vertexIndex;
+                indices[triangleIndex + 1] = vertexIndex + 2;
+                indices[triangleIndex + 2] = vertexIndex + 1;
+                indices[triangleIndex + 3] = vertexIndex;
+                indices[triangleIndex + 4] = vertexIndex + 3;
+                indices[triangleIndex + 5] = vertexIndex + 2;
             }
         }
     }
@@ -281,45 +306,91 @@ export function generateRoundedBox(resolution: number): Mesh {
         };
     }
 
-    const positions: number[] = [];
-    const normals: number[] = [];
-    const tangents: number[] = [];
-    const uvs: number[] = [];
-    const indices: number[] = [];
+    // it's computed by quad
+    const numVerticesPerFace = resolution * resolution * 4;
+    const numVertices = numVerticesPerFace * 6;
+    const numIndicesPerFace = resolution * resolution * 6;
+    const numIndices = numIndicesPerFace * 6;
+    const positions: Float32Array = new Float32Array(numVertices * 3);
+    const normals: Float32Array = new Float32Array(numVertices * 3);
+    const tangents: Float32Array = new Float32Array(numVertices * 4);
+    const uvs: Float32Array = new Float32Array(numVertices * 2);
+    const indices: Uint32Array = new Uint32Array(numIndices);
+    // const indices: Uint32Array = new Uint32Array(numIndicesPerFace);
 
     // Define a size, radius, and resolution.
-    const size = vec3.fromValues(1, 1.25, 1.5);
-    const radius = 0.25;
+    const size = vec3.fromValues(1.6, 1.6, 1.6);
+    const radius = 0.2;
 
+    let faceIndex = 0;
     for (const face of faces) {
         const start = vec3.multiply(vec3.create(), face.start, size);
         const width = vec3.length(vec3.multiply(vec3.create(), face.right, size));
         const height = vec3.length(vec3.multiply(vec3.create(), face.up, size));
-        let positionFaceIndex = positions.length;
-        grid(start, face.right, face.up, width, height, resolution, resolution, indices, positions);
+
+        let vertexIndexOffset = numVerticesPerFace * faceIndex;
+        let indexIndexOffset = numIndicesPerFace * faceIndex;
+        grid(start, face.right, face.up, width, height, resolution, resolution, indices, positions, indexIndexOffset, vertexIndexOffset);
 
         // Move each vertex to its rounded position.
         let tmpPositions: vec3 = vec3.create();
-        for (let i = positionFaceIndex; i < positions.length / 3; i++) {
-            let index = i * 3;
-            vec3.set(tmpPositions, positions[index], positions[index + 1], positions[index + 2]);
+        const uvIndex = face.uvIndex;
+
+        // Calculate face normal by crossing right and up vectors
+        // const faceNormal = vec3.cross(vec3.create(), face.right, face.up);
+        // vec3.normalize(faceNormal, faceNormal);
+
+        for (let i = 0; i < numVerticesPerFace; i++) {
+
+            let indexPos = (vertexIndexOffset + i) * 3;
+            let indexUv = (vertexIndexOffset + i) * 2;
+            vec3.set(tmpPositions, positions[indexPos], positions[indexPos + 1], positions[indexPos + 2]);
             const rounded = roundedBoxPoint(tmpPositions, size, radius);
 
-            positions[index] = rounded.position[0];
-            positions[index + 1] = rounded.position[1];
-            positions[index + 2] = rounded.position[2];
+            positions[indexPos + 0] = rounded.position[0];
+            positions[indexPos + 1] = rounded.position[1];
+            positions[indexPos + 2] = rounded.position[2];
 
-            // Store the normal.
-            normals.push(rounded.normal[0], rounded.normal[1], rounded.normal[2]);
+            const u = (rounded.position[uvIndex[0]] / size[uvIndex[0]]) + 0.5;
+            const v = (rounded.position[uvIndex[1]] / size[uvIndex[1]]) + 0.5;
+            uvs[indexUv + 0] = u
+            uvs[indexUv + 1] = v;
+
+            const normal = rounded.normal;
+
+            normals[indexPos + 0] = normal[0];
+            normals[indexPos + 1] = normal[1];
+            normals[indexPos + 2] = normal[2];
+
+            // Calculate tangent vector
+            // Use the face's right vector as a base for the tangent
+            const tangent = vec3.normalize(vec3.create(), face.right);
+            // Make tangent perpendicular to normal using Gram-Schmidt
+            const dot = vec3.dot(tangent, normal);
+            vec3.scaleAndAdd(tangent, tangent, normal, -dot);
+            vec3.normalize(tangent, tangent);
+
+            // Calculate bitangent and handedness
+            const bitangent = vec3.cross(vec3.create(), normal, tangent);
+            const handedness = vec3.dot(bitangent, face.up) > 0 ? 1.0 : -1.0;
+
+            // Store tangent with handedness in w component
+            const indexTangent = (vertexIndexOffset + i) * 4;
+            tangents[indexTangent + 0] = tangent[0];
+            tangents[indexTangent + 1] = tangent[1];
+            tangents[indexTangent + 2] = tangent[2];
+            tangents[indexTangent + 3] = handedness;
         }
+
+        faceIndex++;
     }
 
     return {
-        positions: new Float32Array(positions),
-        normals: new Float32Array(normals),
-        tangents: new Float32Array(tangents),
-        uvs: new Float32Array(uvs),
-        indices: new Uint32Array(indices),
+        positions: positions,
+        normals: normals,
+        tangents: tangents,
+        uvs: uvs,
+        indices: indices,
         vertexBytes: 3 * 4 + 3 * 4 + 4 * 4 + 2 * 4
     };
 }
@@ -331,7 +402,7 @@ export function generateMesh(shape: ShapeType, resolution: number): Mesh {
         case 'wavySphere':
             return generateWavySphere(resolution);
         case 'roundedBox':
-            return generateRoundedBox(resolution);
+            return generateRoundedBox(resolution / 2);
         default:
             return generateSphere(resolution);
     }

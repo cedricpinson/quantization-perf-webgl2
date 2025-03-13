@@ -1,4 +1,4 @@
-import { mat4 } from 'gl-matrix';
+import { mat4, vec3 } from 'gl-matrix';
 import { Pane } from 'tweakpane';
 import { ShapeType } from './mesh';
 import { GpuUncompressedMesh, GpuQuantizedMesh } from './gpu-mesh';
@@ -17,6 +17,7 @@ import {
     fragmentShader
 } from './shaders';
 import { generateMesh } from './mesh';
+import { testTangentEncoding } from './tangentEncoding';
 
 interface UIParams {
     resolution: number;
@@ -326,4 +327,16 @@ function main() {
     });
 }
 
+// const normalTest = vec3.fromValues(
+//     0.5773502588272095,
+//     -0.5773502588272095,
+//     0.5773502588272095
+// );
+// const tangentTest = vec3.fromValues(
+//     0.40824827551841736,
+//     -0.40824827551841736,
+//     -0.8164966106414795
+// );
+// const tangentSignTest = 1;
+// testTangentEncoding(normalTest, tangentTest, tangentSignTest);
 main();

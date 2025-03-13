@@ -42,6 +42,13 @@ export class GpuUncompressedMesh {
         const positionBuffer = createBuffer(gl, mesh.positions, gl.STATIC_DRAW);
         const normalBuffer = createBuffer(gl, mesh.normals, gl.STATIC_DRAW);
         const tangentBuffer = createBuffer(gl, mesh.tangents, gl.STATIC_DRAW);
+        // for (let i = 0; i < mesh.tangents.length / 4; i++) {
+        //     const a = mesh.tangents[i * 4 + 0];
+        //     const b = mesh.tangents[i * 4 + 1];
+        //     const c = mesh.tangents[i * 4 + 2];
+        //     const d = mesh.tangents[i * 4 + 3];
+        //     console.log(a, b, c, d);
+        // }
         const uvBuffer = createBuffer(gl, mesh.uvs, gl.STATIC_DRAW);
         const indexBuffer = createIndexBuffer(gl, mesh.indices, gl.STATIC_DRAW);
 

@@ -1,5 +1,6 @@
 import { vec3 } from 'gl-matrix';
 import { Mesh } from './mesh';
+import { encodeTangent, decodeTangent } from './tangentEncoding';
 
 export interface QuantizedMesh {
     compressedData: Uint16Array;
@@ -55,17 +56,12 @@ export function quantizeMesh(mesh: Mesh): QuantizedMesh {
         // Calculate tangent angle
         const normal = vec3.fromValues(normals[posIdx], normals[posIdx + 1], normals[posIdx + 2]);
         const tangent = vec3.fromValues(tangents[tanIdx], tangents[tanIdx + 1], tangents[tanIdx + 2]);
-        const bitangent = vec3.cross(vec3.create(), normal, tangent);
-        vec3.normalize(bitangent, bitangent);
-
-        const angle = Math.atan2(
-            vec3.dot(tangent, vec3.cross(vec3.create(), normal, bitangent)),
-            vec3.dot(tangent, bitangent)
-        );
-        const normalizedAngle = ((angle + Math.PI) / (2 * Math.PI));
-        const quantizedAngle = (normalizedAngle * 32767) | 0 & 0x7FFF;
         const tangentSign = tangents[tanIdx + 3] > 0 ? 1 : 0;
-        compressedData[outIdx + 3] = (tangentSign << 15) | quantizedAngle;
+
+        const encodedTangent = encodeTangent(normal, tangent, tangentSign);
+        const decodedTangent = decodeTangent(encodedTangent, normal);
+
+        compressedData[outIdx + 3] = encodedTangent;
 
         // Encode normal using octahedral encoding
         const nx = normals[posIdx];
