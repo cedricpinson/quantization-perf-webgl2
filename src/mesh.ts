@@ -239,20 +239,24 @@ export function generateRoundedBox(resolution: number): Mesh {
     ): void {
 
         // Traverse the face.
+        let pa = vec3.create();
+        let pb = vec3.create();
+        let pc = vec3.create();
+        let pd = vec3.create();
         for (let x = 0; x < widthSteps; x++) {
             for (let y = 0; y < heightSteps; y++) {
                 // Lower left corner of this quad.
-                const pa = vec3.scaleAndAdd(vec3.create(), start, right, (width * x) / widthSteps);
+                vec3.scaleAndAdd(pa, start, right, (width * x) / widthSteps);
                 vec3.scaleAndAdd(pa, pa, up, (height * y) / heightSteps);
 
                 // Lower right corner.
-                const pb = vec3.scaleAndAdd(vec3.create(), pa, right, width / widthSteps);
+                vec3.scaleAndAdd(pb, pa, right, width / widthSteps);
 
                 // Upper right corner.
-                const pc = vec3.scaleAndAdd(vec3.create(), pb, up, height / heightSteps);
+                vec3.scaleAndAdd(pc, pb, up, height / heightSteps);
 
                 // Upper left corner.
-                const pd = vec3.scaleAndAdd(vec3.create(), pa, up, height / heightSteps);
+                vec3.scaleAndAdd(pd, pa, up, height / heightSteps);
 
                 // Store the six vertices of the two triangles composing this quad.
                 //positions.push(pa, pb, pc, pa, pc, pd);
@@ -286,25 +290,25 @@ export function generateRoundedBox(resolution: number): Mesh {
         }
     }
 
-    function roundedBoxPoint(point: vec3, size: vec3, radius: number): { normal: vec3, position: vec3 } {
+    let tmp0 = vec3.create();
+    let tmp1 = vec3.create();
+    function roundedBoxPoint(point: vec3, size: vec3, radius: number, normal: vec3, position: vec3) {
         // Calculate the min and max bounds of the sphere center.
-        const boundMax = vec3.multiply(vec3.create(), size, vec3.fromValues(0.5, 0.5, 0.5));
+        const boundMax = vec3.multiply(tmp0, size, vec3.fromValues(0.5, 0.5, 0.5));
         vec3.subtract(boundMax, boundMax, [radius, radius, radius]);
-        const boundMin = vec3.multiply(vec3.create(), size, vec3.fromValues(-0.5, -0.5, -0.5));
+        const boundMin = vec3.multiply(tmp1, size, vec3.fromValues(-0.5, -0.5, -0.5));
         vec3.add(boundMin, boundMin, [radius, radius, radius]);
 
         // Clamp the sphere center to the bounds.
-        const clamped = vec3.max(vec3.create(), boundMin, point);
+        const clamped = vec3.max(tmp1, boundMin, point);
         vec3.min(clamped, boundMax, clamped);
 
         // Calculate the normal and position of our new rounded box vertex and return them.
-        const normal = vec3.normalize(vec3.create(), vec3.subtract(vec3.create(), point, clamped));
-        const position = vec3.scaleAndAdd(vec3.create(), clamped, normal, radius);
-        return {
-            normal,
-            position,
-        };
+        vec3.normalize(normal, vec3.subtract(tmp0, point, clamped));
+        vec3.scaleAndAdd(position, clamped, normal, radius);
     }
+
+    const now = performance.now();
 
     // it's computed by quad
     const numVerticesPerFace = resolution * resolution * 4;
@@ -330,7 +334,10 @@ export function generateRoundedBox(resolution: number): Mesh {
 
         let vertexIndexOffset = numVerticesPerFace * faceIndex;
         let indexIndexOffset = numIndicesPerFace * faceIndex;
+        const now = performance.now();
         grid(start, face.right, face.up, width, height, resolution, resolution, indices, positions, indexIndexOffset, vertexIndexOffset);
+        const end = performance.now();
+        console.log(`Grid time: ${end - now} milliseconds`);
 
         // Move each vertex to its rounded position.
         let tmpPositions: vec3 = vec3.create();
@@ -339,52 +346,60 @@ export function generateRoundedBox(resolution: number): Mesh {
         // Calculate face normal by crossing right and up vectors
         // const faceNormal = vec3.cross(vec3.create(), face.right, face.up);
         // vec3.normalize(faceNormal, faceNormal);
+        {
+            const now = performance.now();
+            let position = vec3.create();
+            let normal = vec3.create();
+            let tangent = vec3.create();
+            let bitangent = vec3.create();
+            for (let i = 0; i < numVerticesPerFace; i++) {
 
-        for (let i = 0; i < numVerticesPerFace; i++) {
+                let indexPos = (vertexIndexOffset + i) * 3;
+                let indexUv = (vertexIndexOffset + i) * 2;
+                vec3.set(position, positions[indexPos], positions[indexPos + 1], positions[indexPos + 2]);
+                roundedBoxPoint(position, size, radius, normal, position);
 
-            let indexPos = (vertexIndexOffset + i) * 3;
-            let indexUv = (vertexIndexOffset + i) * 2;
-            vec3.set(tmpPositions, positions[indexPos], positions[indexPos + 1], positions[indexPos + 2]);
-            const rounded = roundedBoxPoint(tmpPositions, size, radius);
+                positions[indexPos + 0] = position[0];
+                positions[indexPos + 1] = position[1];
+                positions[indexPos + 2] = position[2];
 
-            positions[indexPos + 0] = rounded.position[0];
-            positions[indexPos + 1] = rounded.position[1];
-            positions[indexPos + 2] = rounded.position[2];
+                const u = (position[uvIndex[0]] / size[uvIndex[0]]) + 0.5;
+                const v = (position[uvIndex[1]] / size[uvIndex[1]]) + 0.5;
+                uvs[indexUv + 0] = u
+                uvs[indexUv + 1] = v;
 
-            const u = (rounded.position[uvIndex[0]] / size[uvIndex[0]]) + 0.5;
-            const v = (rounded.position[uvIndex[1]] / size[uvIndex[1]]) + 0.5;
-            uvs[indexUv + 0] = u
-            uvs[indexUv + 1] = v;
+                normals[indexPos + 0] = normal[0];
+                normals[indexPos + 1] = normal[1];
+                normals[indexPos + 2] = normal[2];
 
-            const normal = rounded.normal;
+                // Calculate tangent vector
+                // Use the face's right vector as a base for the tangent
+                vec3.normalize(tangent, face.right);
+                // Make tangent perpendicular to normal using Gram-Schmidt
+                const dot = vec3.dot(tangent, normal);
+                vec3.scaleAndAdd(tangent, tangent, normal, -dot);
+                vec3.normalize(tangent, tangent);
 
-            normals[indexPos + 0] = normal[0];
-            normals[indexPos + 1] = normal[1];
-            normals[indexPos + 2] = normal[2];
+                // Calculate bitangent and handedness
+                vec3.cross(bitangent, normal, tangent);
+                const handedness = vec3.dot(bitangent, face.up) > 0 ? 1.0 : -1.0;
 
-            // Calculate tangent vector
-            // Use the face's right vector as a base for the tangent
-            const tangent = vec3.normalize(vec3.create(), face.right);
-            // Make tangent perpendicular to normal using Gram-Schmidt
-            const dot = vec3.dot(tangent, normal);
-            vec3.scaleAndAdd(tangent, tangent, normal, -dot);
-            vec3.normalize(tangent, tangent);
-
-            // Calculate bitangent and handedness
-            const bitangent = vec3.cross(vec3.create(), normal, tangent);
-            const handedness = vec3.dot(bitangent, face.up) > 0 ? 1.0 : -1.0;
-
-            // Store tangent with handedness in w component
-            const indexTangent = (vertexIndexOffset + i) * 4;
-            tangents[indexTangent + 0] = tangent[0];
-            tangents[indexTangent + 1] = tangent[1];
-            tangents[indexTangent + 2] = tangent[2];
-            tangents[indexTangent + 3] = handedness;
+                // Store tangent with handedness in w component
+                const indexTangent = (vertexIndexOffset + i) * 4;
+                tangents[indexTangent + 0] = tangent[0];
+                tangents[indexTangent + 1] = tangent[1];
+                tangents[indexTangent + 2] = tangent[2];
+                tangents[indexTangent + 3] = handedness;
+            }
+            const end = performance.now();
+            console.log(`Rounded box time: ${end - now} milliseconds`);
         }
 
         faceIndex++;
     }
 
+    const end = performance.now();
+    console.log(`Time taken: ${end - now} milliseconds`);
     return {
         positions: positions,
         normals: normals,
@@ -393,6 +408,7 @@ export function generateRoundedBox(resolution: number): Mesh {
         indices: indices,
         vertexBytes: 3 * 4 + 3 * 4 + 4 * 4 + 2 * 4
     };
+
 }
 
 export function generateMesh(shape: ShapeType, resolution: number): Mesh {

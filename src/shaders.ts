@@ -6,6 +6,7 @@ uniform mat4 uNormalMatrix;
 uniform vec3 uLightPosition;
 uniform sampler2D uAlbedoMap;
 uniform sampler2D uNormalMap;
+uniform int uDisplayMode; // 0: default, 1: normal, 2: tangent, 3: uv
 `;
 
 // Uncompressed vertex shader
@@ -121,26 +122,54 @@ in vec3 vTangent;
 in float vTangentW;
 in vec2 vUV;
 
+uniform int uDisplayMode;
 uniform vec3 uLightPosition;
 uniform sampler2D uAlbedoMap;
 uniform sampler2D uNormalMap;
 
 out vec4 fragColor;
 
+vec3 visualizeNormal(vec3 normal) {
+    return normal * 0.5 + 0.5; // Convert from [-1,1] to [0,1] range
+}
+
+vec3 visualizeTangent(vec3 tangent) {
+    return abs(tangent); // Show absolute values to better visualize direction
+}
+
+vec3 visualizeUV(vec2 uv) {
+    return vec3(uv, 0.0); // R = U, G = V, B = 0
+}
+
 void main() {
-    vec3 normal = normalize(vNormal);
     vec3 bitangent = cross(vNormal, vTangent) * vTangentW;
     mat3 TBN = mat3(vTangent, bitangent, vNormal);
 
     vec3 normalMap = texture(uNormalMap, vUV).xyz * 2.0 - 1.0;
-    normal = normalize(TBN * normalMap);
+    vec3 normal = normalize(TBN * normalMap);
 
-    vec3 lightDir = normalize(uLightPosition - vPosition);
-    float diffuse = max(dot(normal, lightDir), 0.0);
+    // Choose visualization based on display mode
+    if (uDisplayMode == 1) {
+        // Normal visualization
+        fragColor = vec4(visualizeNormal(normalize(vNormal)), 1.0);
+    }
+    else if (uDisplayMode == 2) {
+        // Tangent visualization
+        fragColor = vec4(visualizeTangent(normalize(vTangent)), 1.0);
+    }
+    else if (uDisplayMode == 3) {
+        // UV visualization
+        fragColor = vec4(visualizeUV(vUV), 1.0);
+    }
+    else {
+        // Default rendering
+        vec3 lightDir = normalize(uLightPosition - vPosition);
+        float diffuse = max(dot(normal, lightDir), 0.0);
 
-    vec3 albedo = texture(uAlbedoMap, vUV).rgb;
-    vec3 ambient = albedo * 0.2;
-    vec3 color = ambient + albedo * diffuse;
+        vec3 albedo = texture(uAlbedoMap, vUV).rgb;
+        vec3 ambient = albedo * 0.2;
+        vec3 color = ambient + albedo * diffuse;
 
-    fragColor = vec4(color, 1.0);
+        fragColor = vec4(color, 1.0);
+    }
 }`;

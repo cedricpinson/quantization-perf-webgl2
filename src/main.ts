@@ -17,7 +17,6 @@ import {
     fragmentShader
 } from './shaders';
 import { generateMesh } from './mesh';
-import { testTangentEncoding } from './tangentEncoding';
 
 interface UIParams {
     resolution: number;
@@ -25,6 +24,8 @@ interface UIParams {
     useQuantizedMesh: boolean;
     shape: ShapeType;
     isPaused: boolean;
+    displayMode: 'default' | 'normal' | 'tangent' | 'uv';
+    zoom: number;
 }
 
 function getUrlParams(): Partial<UIParams> {
@@ -34,13 +35,17 @@ function getUrlParams(): Partial<UIParams> {
     const useQuantizedMesh = params.get('useQuantizedMesh');
     const rotationSpeed = params.get('rotationSpeed');
     const isPaused = params.get('isPaused');
+    const displayMode = params.get('displayMode') as 'default' | 'normal' | 'tangent' | 'uv' | null;
+    const zoom = params.get('zoom');
 
     return {
         resolution: resolution ? Math.min(Math.max(parseInt(resolution), 512), 8192) : undefined,
         shape: shape && ['sphere', 'wavySphere', 'roundedBox'].includes(shape) ? shape : undefined,
         useQuantizedMesh: useQuantizedMesh ? useQuantizedMesh === 'true' : undefined,
         rotationSpeed: rotationSpeed ? parseFloat(rotationSpeed) : undefined,
-        isPaused: isPaused ? isPaused === 'true' : undefined
+        isPaused: isPaused ? isPaused === 'true' : undefined,
+        displayMode: displayMode ?? 'default',
+        zoom: zoom ? parseFloat(zoom) : undefined
     };
 }
 
@@ -91,7 +96,9 @@ function main() {
         rotationSpeed: urlParams.rotationSpeed ?? 0.5,
         useQuantizedMesh: urlParams.useQuantizedMesh ?? false,
         shape: urlParams.shape ?? 'sphere',
-        isPaused: urlParams.isPaused ?? false
+        isPaused: urlParams.isPaused ?? false,
+        displayMode: urlParams.displayMode ?? 'default',
+        zoom: urlParams.zoom ?? 0.1
     };
 
     // Get the controls container
@@ -110,6 +117,23 @@ function main() {
         max: 8192,
         step: 512,
         label: 'Resolution'
+    });
+
+    pane.addBinding(params, 'displayMode', {
+        options: {
+            'Default': 'default',
+            'Normal': 'normal',
+            'Tangent': 'tangent',
+            'UV': 'uv'
+        },
+        label: 'Display Mode'
+    });
+
+    pane.addBinding(params, 'zoom', {
+        min: 0.1,
+        max: 2,
+        step: 0.1,
+        label: 'Zoom'
     });
 
     pane.addBinding(params, 'shape', {
@@ -229,7 +253,7 @@ function main() {
         // Update matrices
         mat4.perspective(projectionMatrix, Math.PI / 3, gl.canvas.width / gl.canvas.height, 0.1, 100.0);
         mat4.identity(modelViewMatrix);
-        mat4.translate(modelViewMatrix, modelViewMatrix, [0, 0, -3]);
+        mat4.translate(modelViewMatrix, modelViewMatrix, [0, 0, -3 + params.zoom]);
         mat4.rotateY(modelViewMatrix, modelViewMatrix, rotation);
         mat4.rotateX(modelViewMatrix, modelViewMatrix, Math.PI / 6);
         mat4.invert(normalMatrix, modelViewMatrix);
@@ -245,10 +269,12 @@ function main() {
         const lightPosLoc = gl.getUniformLocation(program, 'uLightPosition');
         const albedoLoc = gl.getUniformLocation(program, 'uAlbedoMap');
         const normalMapLoc = gl.getUniformLocation(program, 'uNormalMap');
+        const displayModeLoc = gl.getUniformLocation(program, 'uDisplayMode');
 
         gl.uniformMatrix4fv(mvLoc, false, modelViewMatrix);
         gl.uniformMatrix4fv(projLoc, false, projectionMatrix);
         gl.uniformMatrix4fv(normalMatLoc, false, normalMatrix);
+        gl.uniform1i(displayModeLoc, params.displayMode === 'normal' ? 1 : params.displayMode === 'tangent' ? 2 : params.displayMode === 'uv' ? 3 : 0);
         gl.uniform3f(lightPosLoc, 2, 2, 2);
 
         gl.activeTexture(gl.TEXTURE0);
@@ -287,33 +313,6 @@ function main() {
 
     // Start the render loop
     render();
-
-
-    // Example: function to change shape
-    function setShape(shape: ShapeType) {
-        params.shape = shape;
-    }
-
-    // Example: function to change resolution
-    function setResolution(resolution: number) {
-        params.resolution = resolution;
-    }
-
-    // Example: function to toggle quantized mesh
-    function toggleQuantizedMesh() {
-        params.useQuantizedMesh = !params.useQuantizedMesh;
-    }
-
-    // Example: function to set rotation speed
-    function setRotationSpeed(speed: number) {
-        params.rotationSpeed = speed;
-    }
-
-    // Make these functions available globally if needed
-    (window as any).setShape = setShape;
-    (window as any).setResolution = setResolution;
-    (window as any).toggleQuantizedMesh = toggleQuantizedMesh;
-    (window as any).setRotationSpeed = setRotationSpeed;
 
     // Clean up resources when the page is unloaded
     window.addEventListener('unload', () => {
