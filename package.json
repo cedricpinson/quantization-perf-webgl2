@@ -1,0 +1,23 @@
+{
+    "name": "quantization-perf-webgl2",
+    "private": true,
+    "version": "0.0.0",
+    "type": "module",
+    "scripts": {
+        "dev": "vite",
+        "build": "tsc && vite build",
+        "preview": "vite preview --host"
+    },
+    "devDependencies": {
+        "@tweakpane/core": "^2.0.5",
+        "typescript": "^5.2.2",
+        "vite": "^5.1.4"
+    },
+    "dependencies": {
+        "@types/gl-matrix": "^3.2.0",
+        "@types/stats.js": "^0.17.3",
+        "gl-matrix": "^3.4.3",
+        "stats.js": "^0.17.0",
+        "tweakpane": "^4.0.3"
+    }
+}
