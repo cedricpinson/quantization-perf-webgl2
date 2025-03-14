@@ -350,7 +350,7 @@ function main() {
             const numVertices = params.useQuantizedMesh ? meshState.gpuQuantizedMesh?.numVertices ?? 0 : meshState.gpuUncompressedMesh?.numVertices ?? 0;
             const numIndices = params.useQuantizedMesh ? meshState.gpuQuantizedMesh?.numIndices ?? 0 : meshState.gpuUncompressedMesh?.numIndices ?? 0;
             const vertexBytes = params.useQuantizedMesh ? meshState.gpuQuantizedMesh?.vertexBytes ?? 0 : meshState.gpuUncompressedMesh?.vertexBytes ?? 0;
-            performance.updateDisplay(numVertices, numIndices / 3, vertexBytes);
+            performance.updateDisplay(numVertices, numIndices / 3, vertexBytes, params.useQuantizedMesh);
         }
 
         requestAnimationFrame(() => render());
