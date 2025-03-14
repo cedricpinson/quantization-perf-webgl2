@@ -1,4 +1,4 @@
-import { mat4, vec3 } from 'gl-matrix';
+import { mat4 } from 'gl-matrix';
 import { Pane } from 'tweakpane';
 import { Mesh, ShapeType } from './mesh';
 import { GpuUncompressedMesh, GpuQuantizedMesh } from './gpu-mesh';

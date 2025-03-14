@@ -1,6 +1,6 @@
 import { vec3 } from 'gl-matrix';
 import { Mesh } from './mesh';
-import { encodeTangent, decodeTangent } from './tangentEncoding';
+import { encodeTangent } from './tangentEncoding';
 
 export interface QuantizedMesh {
     compressedData: Uint16Array;
@@ -59,7 +59,7 @@ export function quantizeMesh(mesh: Mesh): QuantizedMesh {
         const tangentSign = tangents[tanIdx + 3] > 0 ? 1 : 0;
 
         const encodedTangent = encodeTangent(normal, tangent, tangentSign);
-        const decodedTangent = decodeTangent(encodedTangent, normal);
+        //const decodedTangent = decodeTangent(encodedTangent, normal);
 
         compressedData[outIdx + 3] = encodedTangent;
 
