@@ -1,6 +1,6 @@
 import { mat4, vec3 } from 'gl-matrix';
 import { Pane } from 'tweakpane';
-import { ShapeType } from './mesh';
+import { Mesh, ShapeType } from './mesh';
 import { GpuUncompressedMesh, GpuQuantizedMesh } from './gpu-mesh';
 import { PerformanceMonitor } from './performance';
 import {
@@ -196,46 +196,91 @@ function main() {
         lastShape: null
     };
 
-    function updateMesh(state: MeshState) {
-        if ((params.useQuantizedMesh && state.gpuQuantizedMesh === null) ||
-            (!params.useQuantizedMesh && state.gpuUncompressedMesh === null) ||
-            state.lastResolution !== params.resolution || state.lastShape !== params.shape) {
-            // Clean up existing GPU meshes
-            if (state.gpuUncompressedMesh) {
-                state.gpuUncompressedMesh.cleanup(gl);
-            }
-            if (state.gpuQuantizedMesh) {
-                state.gpuQuantizedMesh.cleanup(gl);
-            }
-            state.gpuQuantizedMesh = null;
-            state.gpuUncompressedMesh = null;
-
-            // Generate new meshes
-            const currentMesh = generateMesh(params.shape, params.resolution);
-            console.log(`using mesh with ${currentMesh.positions.length / 3} vertices and ${currentMesh.indices.length / 3} triangles`);
-            if (params.useQuantizedMesh) {
-                state.gpuQuantizedMesh = new GpuQuantizedMesh(gl, quantizedProgram, currentMesh);
-            } else {
-                state.gpuUncompressedMesh = new GpuUncompressedMesh(gl, uncompressedProgram, currentMesh);
-            }
-
-            state.lastResolution = params.resolution;
-            state.lastShape = params.shape;
-        }
+    async function buildMesh() {
+        const currentMesh = await generateMesh(params.shape, params.resolution);
+        console.log(`using mesh with ${currentMesh.positions.length / 3} vertices and ${currentMesh.indices.length / 3} triangles`);
+        return currentMesh;
     }
+
+    function needToBuildMesh(): boolean {
+        return (params.useQuantizedMesh && meshState.gpuQuantizedMesh === null) ||
+            (!params.useQuantizedMesh && meshState.gpuUncompressedMesh === null) ||
+            meshState.lastResolution !== params.resolution || meshState.lastShape !== params.shape;
+    }
+
+    // function updateMesh2(state: MeshState) {
+    //     if ((params.useQuantizedMesh && state.gpuQuantizedMesh === null) ||
+    //         (!params.useQuantizedMesh && state.gpuUncompressedMesh === null) ||
+    //         state.lastResolution !== params.resolution || state.lastShape !== params.shape) {
+    //         // Clean up existing GPU meshes
+    //         if (state.gpuUncompressedMesh) {
+    //             state.gpuUncompressedMesh.cleanup(gl);
+    //         }
+    //         if (state.gpuQuantizedMesh) {
+    //             state.gpuQuantizedMesh.cleanup(gl);
+    //         }
+    //         state.gpuQuantizedMesh = null;
+    //         state.gpuUncompressedMesh = null;
+
+    //         // Generate new meshes
+    //         const currentMesh = generateMesh(params.shape, params.resolution);
+    //         console.log(`using mesh with ${currentMesh.positions.length / 3} vertices and ${currentMesh.indices.length / 3} triangles`);
+    //         if (params.useQuantizedMesh) {
+    //             state.gpuQuantizedMesh = new GpuQuantizedMesh(gl, quantizedProgram, currentMesh);
+    //         } else {
+    //             state.gpuUncompressedMesh = new GpuUncompressedMesh(gl, uncompressedProgram, currentMesh);
+    //         }
+
+    //         state.lastResolution = params.resolution;
+    //         state.lastShape = params.shape;
+    //     }
+    // }
+
+    function updateMesh(state: MeshState, currentMesh: Mesh) {
+        // Clean up existing GPU meshes
+        if (state.gpuUncompressedMesh) {
+            state.gpuUncompressedMesh.cleanup(gl);
+        }
+        if (state.gpuQuantizedMesh) {
+            state.gpuQuantizedMesh.cleanup(gl);
+        }
+        state.gpuQuantizedMesh = null;
+        state.gpuUncompressedMesh = null;
+
+        if (params.useQuantizedMesh) {
+            state.gpuQuantizedMesh = new GpuQuantizedMesh(gl, quantizedProgram, currentMesh);
+        } else {
+            state.gpuUncompressedMesh = new GpuUncompressedMesh(gl, uncompressedProgram, currentMesh);
+        }
+
+        state.lastResolution = params.resolution;
+        state.lastShape = params.shape;
+    }
+
 
     let rotation = 0;
 
-    function render() {
+    async function render() {
         if (params.isPaused) {
+            requestAnimationFrame(() => render());
+            return;
+        }
+
+        if (needToBuildMesh()) {
+            const currentMesh = await buildMesh();
+            updateMesh(meshState, currentMesh);
+        }
+
+        if (!meshState.gpuUncompressedMesh && !meshState.gpuQuantizedMesh) {
             requestAnimationFrame(() => render());
             return;
         }
 
         performance.beginFrame();
 
-        updateMesh(meshState);
+        // updateMesh(meshState);
         resizeCanvasToDisplaySize(canvas);
+
         gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
 
         gl.enable(gl.DEPTH_TEST);
@@ -303,9 +348,9 @@ function main() {
         // Update performance display if needed
         if (performance.shouldUpdateDisplay()) {
             const numVertices = params.useQuantizedMesh ? meshState.gpuQuantizedMesh?.numVertices ?? 0 : meshState.gpuUncompressedMesh?.numVertices ?? 0;
-            const numTriangles = params.useQuantizedMesh ? meshState.gpuQuantizedMesh?.numIndices ?? 0 : meshState.gpuUncompressedMesh?.numIndices ?? 0;
+            const numIndices = params.useQuantizedMesh ? meshState.gpuQuantizedMesh?.numIndices ?? 0 : meshState.gpuUncompressedMesh?.numIndices ?? 0;
             const vertexBytes = params.useQuantizedMesh ? meshState.gpuQuantizedMesh?.vertexBytes ?? 0 : meshState.gpuUncompressedMesh?.vertexBytes ?? 0;
-            performance.updateDisplay(numVertices, numTriangles, vertexBytes);
+            performance.updateDisplay(numVertices, numIndices / 3, vertexBytes);
         }
 
         requestAnimationFrame(() => render());

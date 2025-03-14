@@ -177,7 +177,7 @@ export function generateWavySphere(resolution: number): Mesh {
     };
 }
 
-export function generateRoundedBox(resolution: number): Mesh {
+export async function generateRoundedBox(resolution: number): Promise<Mesh> {
 
     const faces = [
         // Positive X
@@ -224,201 +224,107 @@ export function generateRoundedBox(resolution: number): Mesh {
         },
     ];
 
-    function grid(
-        start: vec3,
-        right: vec3,
-        up: vec3,
-        width: number,
-        height: number,
-        widthSteps: number,
-        heightSteps: number,
-        indices: Uint32Array, // data will be pushed to indices and positions
-        positions: Float32Array, // data will be pushed to positions
-        indexOffset: number,
-        vertexOffset: number
-    ): void {
-
-        // Traverse the face.
-        let pa = vec3.create();
-        let pb = vec3.create();
-        let pc = vec3.create();
-        let pd = vec3.create();
-        for (let x = 0; x < widthSteps; x++) {
-            for (let y = 0; y < heightSteps; y++) {
-                // Lower left corner of this quad.
-                vec3.scaleAndAdd(pa, start, right, (width * x) / widthSteps);
-                vec3.scaleAndAdd(pa, pa, up, (height * y) / heightSteps);
-
-                // Lower right corner.
-                vec3.scaleAndAdd(pb, pa, right, width / widthSteps);
-
-                // Upper right corner.
-                vec3.scaleAndAdd(pc, pb, up, height / heightSteps);
-
-                // Upper left corner.
-                vec3.scaleAndAdd(pd, pa, up, height / heightSteps);
-
-                // Store the six vertices of the two triangles composing this quad.
-                //positions.push(pa, pb, pc, pa, pc, pd);
-                const localQuadIndex = (x * heightSteps + y);
-                const vertexIndex = vertexOffset + localQuadIndex * 4;
-                const vertexIndexComponent = (vertexOffset + localQuadIndex * 4) * 3;
-                positions[vertexIndexComponent + 0] = pa[0];
-                positions[vertexIndexComponent + 1] = pa[1];
-                positions[vertexIndexComponent + 2] = pa[2];
-
-                positions[vertexIndexComponent + 3] = pb[0];
-                positions[vertexIndexComponent + 4] = pb[1];
-                positions[vertexIndexComponent + 5] = pb[2];
-
-                positions[vertexIndexComponent + 6] = pc[0];
-                positions[vertexIndexComponent + 7] = pc[1];
-                positions[vertexIndexComponent + 8] = pc[2];
-
-                positions[vertexIndexComponent + 9] = pd[0];
-                positions[vertexIndexComponent + 10] = pd[1];
-                positions[vertexIndexComponent + 11] = pd[2];
-
-                const triangleIndex = indexOffset + localQuadIndex * 6;
-                indices[triangleIndex + 0] = vertexIndex;
-                indices[triangleIndex + 1] = vertexIndex + 2;
-                indices[triangleIndex + 2] = vertexIndex + 1;
-                indices[triangleIndex + 3] = vertexIndex;
-                indices[triangleIndex + 4] = vertexIndex + 3;
-                indices[triangleIndex + 5] = vertexIndex + 2;
-            }
-        }
-    }
-
-    const now = performance.now();
-
-    // it's computed by quad
     const numVerticesPerFace = resolution * resolution * 4;
     const numVertices = numVerticesPerFace * 6;
     const numIndicesPerFace = resolution * resolution * 6;
     const numIndices = numIndicesPerFace * 6;
-    const positions: Float32Array = new Float32Array(numVertices * 3);
-    const normals: Float32Array = new Float32Array(numVertices * 3);
-    const tangents: Float32Array = new Float32Array(numVertices * 4);
-    const uvs: Float32Array = new Float32Array(numVertices * 2);
-    const indices: Uint32Array = new Uint32Array(numIndices);
-    // const indices: Uint32Array = new Uint32Array(numIndicesPerFace);
 
-    // Define a size, radius, and resolution.
+    // Create final arrays
+    const positions = new Float32Array(numVertices * 3);
+    const normals = new Float32Array(numVertices * 3);
+    const tangents = new Float32Array(numVertices * 4);
+    const uvs = new Float32Array(numVertices * 2);
+    const indices = new Uint32Array(numIndices);
+
     const size = vec3.fromValues(1.6, 1.6, 1.6);
     const radius = 0.3;
 
-    let faceIndex = 0;
-    for (const face of faces) {
-        const start = vec3.multiply(vec3.create(), face.start, size);
-        const width = vec3.length(vec3.multiply(vec3.create(), face.right, size));
-        const height = vec3.length(vec3.multiply(vec3.create(), face.up, size));
+    // Create workers and process faces in parallel
+    const workers = faces.map((_, _index) => {
+        const worker = new Worker(new URL('./boxFaceWorker.ts', import.meta.url), {
+            type: 'module',
+        });
+        // console.log(`Created worker: ${index}`);
+        return worker;
+    });
 
-        let vertexIndexOffset = numVerticesPerFace * faceIndex;
-        let indexIndexOffset = numIndicesPerFace * faceIndex;
-        const now = performance.now();
-        grid(start, face.right, face.up, width, height, resolution, resolution, indices, positions, indexIndexOffset, vertexIndexOffset);
-        const end = performance.now();
-        console.log(`Grid time: ${end - now} milliseconds`);
+    // Wait a bit for workers to initialize
+    await new Promise(resolve => setTimeout(resolve, 100));
 
-        // Move each vertex to its rounded position.
-        const uvIndex = face.uvIndex;
+    const facePromises = faces.map((face, index) => {
+        return new Promise<void>((resolve, reject) => {
+            const worker = workers[index];
 
-        // Calculate face normal by crossing right and up vectors
-        // const faceNormal = vec3.cross(vec3.create(), face.right, face.up);
-        // vec3.normalize(faceNormal, faceNormal);
-        {
-            const now = performance.now();
-            // Pre-allocate all temporary vectors outside the loop
-            const position = vec3.create();
-            const normal = vec3.create();
-            const tangent = vec3.create();
-            const bitangent = vec3.create();
-            const clamped = vec3.create();
+            // Add error handler
+            worker.onerror = (error) => {
+                console.error(`Worker ${index} error:`, error);
+                reject(error);
+            };
 
-            // Pre-calculate size values used in bounds check
-            const sizeHalf = vec3.scale(vec3.create(), size, 0.5);
-            const boundMaxVec = vec3.subtract(vec3.create(), sizeHalf, [radius, radius, radius]);
-            const boundMinVec = vec3.negate(vec3.create(), boundMaxVec);
+            worker.onmessage = (e) => {
+                const {
+                    faceIndex,
+                    positions: facePositions,
+                    normals: faceNormals,
+                    tangents: faceTangents,
+                    uvs: faceUvs,
+                    indices: faceIndices } = e.data;
 
-            // Direct array access for better performance
-            for (let i = 0; i < numVerticesPerFace; i++) {
-                const indexPos = (vertexIndexOffset + i) * 3;
-                const indexUv = (vertexIndexOffset + i) * 2;
-                const indexTangent = (vertexIndexOffset + i) * 4;
+                //console.log(`Worker ${faceIndex} messaged back ${facePositions.length} positions`);
+                // Copy face data to final arrays
+                const vertexOffset = faceIndex * numVerticesPerFace * 3;
+                const tangentOffset = faceIndex * numVerticesPerFace * 4;
+                const uvOffset = faceIndex * numVerticesPerFace * 2;
+                const indexOffset = faceIndex * numIndicesPerFace;
 
-                // Load position directly from array
-                position[0] = positions[indexPos];
-                position[1] = positions[indexPos + 1];
-                position[2] = positions[indexPos + 2];
+                positions.set(facePositions, vertexOffset);
+                normals.set(faceNormals, vertexOffset);
+                tangents.set(faceTangents, tangentOffset);
+                uvs.set(faceUvs, uvOffset);
+                indices.set(faceIndices, indexOffset);
 
-                // Clamp position to bounds
-                vec3.max(clamped, boundMinVec, position);
-                vec3.min(clamped, boundMaxVec, clamped);
+                worker.terminate();
+                resolve();
+            };
 
-                // Calculate normal and update position
-                vec3.subtract(normal, position, clamped);
-                vec3.normalize(normal, normal);
-                vec3.scaleAndAdd(position, clamped, normal, radius);
+            // Send face data to worker
+            //console.log('Sending message to worker', index);
+            worker.postMessage({
+                start: Array.from(face.start),
+                right: Array.from(face.right),
+                up: Array.from(face.up),
+                uvIndex: face.uvIndex,
+                size: Array.from(size),
+                radius,
+                resolution,
+                faceIndex: index,
+                numVerticesPerFace,
+                numIndicesPerFace
+            });
+        });
+    });
 
-                // Write position back to array
-                positions[indexPos] = position[0];
-                positions[indexPos + 1] = position[1];
-                positions[indexPos + 2] = position[2];
+    // Wait for all faces to be processed
+    await Promise.all(facePromises);
 
-                // Calculate UVs directly
-                uvs[indexUv] = (position[uvIndex[0]] / size[uvIndex[0]]) + 0.5;
-                uvs[indexUv + 1] = (position[uvIndex[1]] / size[uvIndex[1]]) + 0.5;
-
-                // Write normal
-                normals[indexPos] = normal[0];
-                normals[indexPos + 1] = normal[1];
-                normals[indexPos + 2] = normal[2];
-
-                // Calculate tangent more efficiently
-                vec3.copy(tangent, face.right);
-                vec3.normalize(tangent, tangent);
-                const dot = vec3.dot(tangent, normal);
-                vec3.scaleAndAdd(tangent, tangent, normal, -dot);
-                vec3.normalize(tangent, tangent);
-
-                // Calculate handedness with fewer operations
-                vec3.cross(bitangent, normal, tangent);
-                const handedness = vec3.dot(bitangent, face.up) > 0 ? 1.0 : -1.0;
-
-                // Write tangent
-                tangents[indexTangent] = tangent[0];
-                tangents[indexTangent + 1] = tangent[1];
-                tangents[indexTangent + 2] = tangent[2];
-                tangents[indexTangent + 3] = handedness;
-            }
-            const end = performance.now();
-            console.log(`Face rounding edges time: ${end - now} milliseconds`);
-        }
-
-        faceIndex++;
-    }
-
-    const end = performance.now();
-    console.log(`Time taken: ${end - now} milliseconds`);
     return {
-        positions: positions,
-        normals: normals,
-        tangents: tangents,
-        uvs: uvs,
-        indices: indices,
+        positions,
+        normals,
+        tangents,
+        uvs,
+        indices,
         vertexBytes: 3 * 4 + 3 * 4 + 4 * 4 + 2 * 4
     };
-
 }
 
-export function generateMesh(shape: ShapeType, resolution: number): Mesh {
+export async function generateMesh(shape: ShapeType, resolution: number): Promise<Mesh> {
     switch (shape) {
         case 'sphere':
             return generateSphere(resolution);
         case 'wavySphere':
             return generateWavySphere(resolution);
         case 'roundedBox':
+            // return generateRoundedBox(2);
             return generateRoundedBox(resolution / 2);
         default:
             return generateSphere(resolution);
