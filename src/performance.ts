@@ -165,7 +165,7 @@ export class PerformanceMonitor {
         return performance.now() - this.lastDisplayUpdate >= this.displayUpdateInterval;
     }
 
-    updateDisplay(numVertices: number, numTriangles: number, vertexBytes: number) {
+    updateDisplay(numVertices: number, numTriangles: number, vertexBytes: number, quantized: boolean) {
         // Calculate averages for each named measurement
         const averages = Object.entries(this.measurementTimes).map(([name, times]) => {
             const sum = times.reduce((a, b) => a + b, 0);
@@ -173,10 +173,15 @@ export class PerformanceMonitor {
             return `${name}: ${avg.toFixed(2)}ms`;
         });
 
+        const format = quantized ? 'pos(3x16) norm(2x16) tang(1x16) uv(2x16)' : 'pos(3x32) norm(3x32) tang(4x32) uv(2x32)';
+
         const memoryUsage = (numVertices * vertexBytes) / 1024 / 1024;
         const memoryUsageIndices = (numTriangles * 3 * 4) / 1024 / 1024;
 
+        this.performanceDiv.style.textAlign = 'left';
         this.performanceDiv.innerHTML = [
+            `Vertex format: ${format}`,
+            `Mesh Vertex size: ${vertexBytes} bytes`,
             `Num Vertices: ${numVertices}`,
             `Num Triangles: ${numTriangles}`,
             `Mesh Vertex memory usage: ${memoryUsage.toFixed(2)} MB`,
