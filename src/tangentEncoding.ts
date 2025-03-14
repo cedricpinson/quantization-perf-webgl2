@@ -109,14 +109,18 @@ export function testTangentEncoding(
     console.log('Sign preserved:', originalSign === decodedSign);
 }
 
-// Example usage
-const normal = vec3.fromValues(0, 1, 0);
-const tangent = vec3.fromValues(1, 0, 0);
-const originalSign = 1;
+if (false) {
+    // Example usage
+    const normal = vec3.fromValues(0, 1, 0);
+    const tangent = vec3.fromValues(1, 0, 0);
+    const originalSign = 1;
 
-// Test the encoding/decoding
-testTangentEncoding(normal, tangent, originalSign);
+    // Test the encoding/decoding
+    testTangentEncoding(normal, tangent, originalSign);
 
-// Or use encode/decode directly
-const encoded = encodeTangent(normal, tangent, originalSign);
-const [decodedTangent, decodedSign] = decodeTangent(encoded, normal);
+    // Or use encode/decode directly
+    // @ts-ignore
+    const encoded = encodeTangent(normal, tangent, originalSign);
+    // @ts-ignore
+    const [decodedTangent, decodedSign] = decodeTangent(encoded, normal);
+}
