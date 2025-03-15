@@ -66,6 +66,7 @@ interface MeshState {
     gpuQuantizedMesh: GpuQuantizedMesh | null;
     lastResolution: number;
     lastShape: ShapeType | null;
+    isBuildingMesh: boolean;
 }
 
 function main() {
@@ -98,7 +99,7 @@ function main() {
         shape: urlParams.shape ?? 'sphere',
         isPaused: urlParams.isPaused ?? false,
         displayMode: urlParams.displayMode ?? 'default',
-        zoom: urlParams.zoom ?? 0.1
+        zoom: urlParams.zoom ?? 0.1,
     };
 
     // Get the controls container
@@ -193,48 +194,23 @@ function main() {
         gpuUncompressedMesh: null,
         gpuQuantizedMesh: null,
         lastResolution: -1,
-        lastShape: null
+        lastShape: null,
+        isBuildingMesh: false
     };
 
     async function buildMesh() {
-        const currentMesh = await generateMesh(params.shape, params.resolution);
-        console.log(`using mesh with ${currentMesh.positions.length / 3} vertices and ${currentMesh.indices.length / 3} triangles`);
+        const currentMesh = await generateMesh(params.shape, params.resolution, params.useQuantizedMesh);
+        console.log(`using mesh with ${currentMesh.numVertices} vertices and ${currentMesh.indices.length / 3} triangles`);
         return currentMesh;
     }
 
     function needToBuildMesh(): boolean {
-        return (params.useQuantizedMesh && meshState.gpuQuantizedMesh === null) ||
+        return !meshState.isBuildingMesh && (
+            (params.useQuantizedMesh && meshState.gpuQuantizedMesh === null) ||
             (!params.useQuantizedMesh && meshState.gpuUncompressedMesh === null) ||
-            meshState.lastResolution !== params.resolution || meshState.lastShape !== params.shape;
+            meshState.lastResolution !== params.resolution || meshState.lastShape !== params.shape);
     }
 
-    // function updateMesh2(state: MeshState) {
-    //     if ((params.useQuantizedMesh && state.gpuQuantizedMesh === null) ||
-    //         (!params.useQuantizedMesh && state.gpuUncompressedMesh === null) ||
-    //         state.lastResolution !== params.resolution || state.lastShape !== params.shape) {
-    //         // Clean up existing GPU meshes
-    //         if (state.gpuUncompressedMesh) {
-    //             state.gpuUncompressedMesh.cleanup(gl);
-    //         }
-    //         if (state.gpuQuantizedMesh) {
-    //             state.gpuQuantizedMesh.cleanup(gl);
-    //         }
-    //         state.gpuQuantizedMesh = null;
-    //         state.gpuUncompressedMesh = null;
-
-    //         // Generate new meshes
-    //         const currentMesh = generateMesh(params.shape, params.resolution);
-    //         console.log(`using mesh with ${currentMesh.positions.length / 3} vertices and ${currentMesh.indices.length / 3} triangles`);
-    //         if (params.useQuantizedMesh) {
-    //             state.gpuQuantizedMesh = new GpuQuantizedMesh(gl, quantizedProgram, currentMesh);
-    //         } else {
-    //             state.gpuUncompressedMesh = new GpuUncompressedMesh(gl, uncompressedProgram, currentMesh);
-    //         }
-
-    //         state.lastResolution = params.resolution;
-    //         state.lastShape = params.shape;
-    //     }
-    // }
 
     function updateMesh(state: MeshState, currentMesh: Mesh) {
         // Clean up existing GPU meshes
@@ -260,6 +236,16 @@ function main() {
 
     let rotation = 0;
 
+    async function startMeshBuild(meshState: MeshState) {
+        if (meshState.isBuildingMesh) return;
+
+        meshState.isBuildingMesh = true;
+        const currentMesh = await buildMesh();
+        updateMesh(meshState, currentMesh);
+        meshState.isBuildingMesh = false;
+    }
+
+
     async function render() {
         if (params.isPaused) {
             requestAnimationFrame(() => render());
@@ -267,8 +253,7 @@ function main() {
         }
 
         if (needToBuildMesh()) {
-            const currentMesh = await buildMesh();
-            updateMesh(meshState, currentMesh);
+            startMeshBuild(meshState);
         }
 
         if (!meshState.gpuUncompressedMesh && !meshState.gpuQuantizedMesh) {
@@ -304,9 +289,17 @@ function main() {
         mat4.invert(normalMatrix, modelViewMatrix);
         mat4.transpose(normalMatrix, normalMatrix);
 
-        const program = params.useQuantizedMesh ? quantizedProgram : uncompressedProgram;
-        gl.useProgram(program);
 
+        let useQuantizedMesh = false;
+        if (meshState.isBuildingMesh) {
+            // during build state use the last available program
+            useQuantizedMesh = meshState.gpuQuantizedMesh ? true : false;
+        } else {
+            // during normal state use the selected program
+            useQuantizedMesh = params.useQuantizedMesh;
+        }
+        const program = useQuantizedMesh ? quantizedProgram : uncompressedProgram;
+        gl.useProgram(program);
         // Set uniforms
         const mvLoc = gl.getUniformLocation(program, 'uModelViewMatrix');
         const projLoc = gl.getUniformLocation(program, 'uProjectionMatrix');
@@ -332,7 +325,7 @@ function main() {
 
         // Set up and draw mesh
         let indexCount: number;
-        if (params.useQuantizedMesh) {
+        if (useQuantizedMesh) {
             indexCount = meshState.gpuQuantizedMesh?.bind(gl) ?? 0;
         } else {
             indexCount = meshState.gpuUncompressedMesh?.bind(gl) ?? 0;

@@ -1,7 +1,9 @@
-// import { vec3 } from 'gl-matrix';
+import { Mesh } from './mesh';
+import { quantizeMesh } from './quantize';
 
 type vec3 = [number, number, number] | Float32Array;
 let vec3: typeof import('gl-matrix').vec3;
+
 // Initialize gl-matrix
 (async () => {
     const glMatrix = await import('gl-matrix');
@@ -20,6 +22,7 @@ interface FaceData {
     faceIndex: number;
     numVerticesPerFace: number;
     numIndicesPerFace: number;
+    quantize: boolean;
 }
 
 function grid(
@@ -198,12 +201,6 @@ self.onmessage = async (e: MessageEvent<FaceData>) => {
         // console.log(`[Worker ${self.name || 'unnamed'}] Waiting for gl-matrix initialization...`);
         await new Promise(resolve => setTimeout(resolve, 10));
     }
-    // console.log(`[Worker ${self.name || 'unnamed'}] Received message:`, {
-    //     faceIndex: e.data.faceIndex,
-    //     resolution: e.data.resolution,
-    //     numVerticesPerFace: e.data.numVerticesPerFace,
-    //     numIndicesPerFace: e.data.numIndicesPerFace
-    // });
     const startTiming = performance.now();
 
     const {
@@ -216,7 +213,9 @@ self.onmessage = async (e: MessageEvent<FaceData>) => {
         resolution,
         faceIndex,
         numVerticesPerFace,
-        numIndicesPerFace } = e.data;
+        numIndicesPerFace,
+        quantize
+    } = e.data;
 
 
     // Convert arrays back to vec3
@@ -232,6 +231,7 @@ self.onmessage = async (e: MessageEvent<FaceData>) => {
     const uvs = new Float32Array(numVerticesPerFace * 2);
     const indices = new Uint32Array(numIndicesPerFace);
 
+
     // Generate grid for this face
     generateFaceGrid(
         startVec, rightVec, upVec,
@@ -240,6 +240,32 @@ self.onmessage = async (e: MessageEvent<FaceData>) => {
         uvIndex, faceIndex
     );
 
+    let mesh: Mesh = {
+        indices,
+        numVertices: numVerticesPerFace,
+        vertexBytes: 0,
+    };
+
+    const transfer = [indices.buffer];
+
+    if (quantize) {
+        let positionMax = vec3.scale(vec3.create(), sizeVec, 0.5);
+        let positionMin = vec3.negate(vec3.create(), positionMax);
+        const meshQuantized = quantizeMesh(numVerticesPerFace, positions, normals, tangents, uvs, positionMin, positionMax);
+        mesh.quantizedData = meshQuantized.compressedData;
+        mesh.positionMin = vec3.clone(positionMin);
+        mesh.positionMax = vec3.clone(positionMax);
+        mesh.vertexBytes = 16;
+        transfer.push(mesh.quantizedData.buffer);
+    } else {
+        mesh.positions = positions;
+        mesh.normals = normals;
+        mesh.tangents = tangents;
+        mesh.uvs = uvs;
+        mesh.vertexBytes = 3 * 4 + 3 * 4 + 4 * 4 + 2 * 4;
+        transfer.push(positions.buffer, normals.buffer, tangents.buffer, uvs.buffer);
+    }
+
     const endTiming = performance.now();
     const duration = (endTiming - startTiming).toFixed(2);
     console.log(`Face generation time: ${duration} milliseconds`);
@@ -247,19 +273,9 @@ self.onmessage = async (e: MessageEvent<FaceData>) => {
     // Send the result back
     self.postMessage({
         faceIndex,
-        positions: positions,
-        normals: normals,
-        tangents: tangents,
-        uvs: uvs,
-        indices: indices
+        ...mesh,
     }, {
-        transfer: [
-            positions.buffer,
-            normals.buffer,
-            tangents.buffer,
-            uvs.buffer,
-            indices.buffer
-        ]
+        transfer
     });
 
 };

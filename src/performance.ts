@@ -178,12 +178,16 @@ export class PerformanceMonitor {
         const memoryUsage = (numVertices * vertexBytes) / 1024 / 1024;
         const memoryUsageIndices = (numTriangles * 3 * 4) / 1024 / 1024;
 
+        const formattedVertices = numVertices.toLocaleString();
+        const formattedTriangles = numTriangles.toLocaleString();
+
+
         this.performanceDiv.style.textAlign = 'left';
         this.performanceDiv.innerHTML = [
-            `Vertex format: ${format}`,
+            `Format: ${format}`,
             `Mesh Vertex size: ${vertexBytes} bytes`,
-            `Num Vertices: ${numVertices}`,
-            `Num Triangles: ${numTriangles}`,
+            `Num Vertices: ${formattedVertices}`,
+            `Num Triangles: ${formattedTriangles}`,
             `Mesh Vertex memory usage: ${memoryUsage.toFixed(2)} MB`,
             `Mesh Indices memory usage: ${memoryUsageIndices.toFixed(2)} MB`,
             ...averages,
