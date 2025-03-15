@@ -7,7 +7,7 @@ export default defineConfig({
     server: {
         open: true
     },
-    base: 'quantization-perf-webgl2',
+    base: '/quantization-perf-webgl2',
     build: {
         sourcemap: true,
         outDir: 'dist',

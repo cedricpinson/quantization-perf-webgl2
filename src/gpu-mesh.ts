@@ -1,6 +1,5 @@
 import { vec3 } from 'gl-matrix';
 import { Mesh } from './mesh';
-import { quantizeMesh } from './quantize';
 import { createBuffer, createIndexBuffer } from './webgl';
 
 interface UncompressedBuffers {
@@ -33,6 +32,9 @@ export class GpuUncompressedMesh {
         program: WebGLProgram,
         mesh: Mesh
     ) {
+        if (!mesh.positions || !mesh.normals || !mesh.tangents || !mesh.uvs || !mesh.indices) {
+            throw new Error('Mesh is missing required attributes');
+        }
 
         this.numVertices = mesh.positions.length / 3;
         this.vertexBytes = mesh.vertexBytes;
@@ -119,12 +121,17 @@ export class GpuQuantizedMesh {
         program: WebGLProgram,
         mesh: Mesh
     ) {
-        const quantizedMesh = quantizeMesh(mesh);
-        this.vertexBytes = quantizedMesh.vertexBytes;
-        this.numVertices = mesh.positions.length / 3;
+
+        if (!mesh.quantizedData || !mesh.positionMin || !mesh.positionMax) {
+            throw new Error('Mesh is missing quantized data or position bounds');
+        }
+
+        //const quantizedMesh = quantizeMesh(mesh);
+        this.vertexBytes = mesh.vertexBytes;
+        this.numVertices = mesh.numVertices;
         // Create buffers
-        const dataBuffer = createBuffer(gl, quantizedMesh.compressedData, gl.STATIC_DRAW);
-        const indexBuffer = createIndexBuffer(gl, quantizedMesh.indices, gl.STATIC_DRAW);
+        const dataBuffer = createBuffer(gl, mesh.quantizedData, gl.STATIC_DRAW);
+        const indexBuffer = createIndexBuffer(gl, mesh.indices, gl.STATIC_DRAW);
 
         this.buffers = {
             data: dataBuffer,
@@ -144,9 +151,9 @@ export class GpuQuantizedMesh {
             this.locations.compressedData.push(loc);
         }
 
-        this.numIndices = quantizedMesh.indices.length;
-        this.positionMin = quantizedMesh.positionMin;
-        this.positionMax = quantizedMesh.positionMax;
+        this.numIndices = mesh.indices.length;
+        this.positionMin = mesh.positionMin;
+        this.positionMax = mesh.positionMax;
     }
 
     bind(gl: WebGL2RenderingContext): number {

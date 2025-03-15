@@ -1,5 +1,4 @@
 import { vec3 } from 'gl-matrix';
-import { Mesh } from './mesh';
 import { encodeTangent } from './tangentEncoding';
 
 export interface QuantizedMesh {
@@ -16,27 +15,28 @@ export interface QuantizedMesh {
 // - UVs: 2x16bits (quantized 0-1 range)
 
 // Total: 8x16bits per vertex (16 bytes) vs 48 bytes for uncompressed format
+export function quantizeMesh(numVertices: number, positions: Float32Array, normals: Float32Array, tangents: Float32Array, uvs: Float32Array, min: vec3 | null, max: vec3 | null): { compressedData: Uint16Array, positionMin: vec3, positionMax: vec3 } {
+    const compressedData = new Uint16Array(numVertices * 8); // 4 vec2 per vertex or 8x16bits
 
-export function quantizeMesh(mesh: Mesh): QuantizedMesh {
-    const { positions, normals, tangents, uvs } = mesh;
-    const vertexCount = positions.length / 3;
-    const compressedData = new Uint16Array(vertexCount * 8); // 4 vec2 per vertex or 8x16bits
-
-    // Find position bounds
     const positionMin = vec3.fromValues(Infinity, Infinity, Infinity);
     const positionMax = vec3.fromValues(-Infinity, -Infinity, -Infinity);
-    for (let i = 0; i < positions.length; i += 3) {
-        positionMin[0] = Math.min(positionMin[0], positions[i]);
-        positionMin[1] = Math.min(positionMin[1], positions[i + 1]);
-        positionMin[2] = Math.min(positionMin[2], positions[i + 2]);
-        positionMax[0] = Math.max(positionMax[0], positions[i]);
-        positionMax[1] = Math.max(positionMax[1], positions[i + 1]);
-        positionMax[2] = Math.max(positionMax[2], positions[i + 2]);
+    if (!min || !max) {
+        // Find position bounds
+        for (let i = 0; i < positions.length; i += 3) {
+            positionMin[0] = Math.min(positionMin[0], positions[i]);
+            positionMin[1] = Math.min(positionMin[1], positions[i + 1]);
+            positionMin[2] = Math.min(positionMin[2], positions[i + 2]);
+            positionMax[0] = Math.max(positionMax[0], positions[i]);
+            positionMax[1] = Math.max(positionMax[1], positions[i + 1]);
+            positionMax[2] = Math.max(positionMax[2], positions[i + 2]);
+        }
+    } else {
+        vec3.copy(positionMin, min);
+        vec3.copy(positionMax, max);
     }
-
     // Quantize positions to 16 bits
     const range = vec3.sub(vec3.create(), positionMax, positionMin);
-    for (let i = 0; i < vertexCount; i++) {
+    for (let i = 0; i < numVertices; i++) {
         const posIdx = i * 3;
         const tanIdx = i * 4;
         const uvIdx = i * 2;
@@ -88,9 +88,7 @@ export function quantizeMesh(mesh: Mesh): QuantizedMesh {
 
     return {
         compressedData,
-        indices: mesh.indices,
         positionMin,
         positionMax,
-        vertexBytes: 16
     };
 }
