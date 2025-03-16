@@ -62,6 +62,10 @@ export async function generateMesh(shape: ShapeType, resolution: number, quantiz
 }
 
 async function generateRoundedBox(resolution: number, quantize: boolean = false): Promise<Mesh> {
+    // Simple mobile detection
+    const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+    console.log(`Executing ${isMobile ? 'sequential (mobile)' : 'parallel (desktop)'} version of rounded box generation`);
+
     const faces = [
         // Positive X
         {
@@ -138,84 +142,141 @@ async function generateRoundedBox(resolution: number, quantize: boolean = false)
     const size = vec3.fromValues(1.6, 1.6, 1.6);
     const radius = 0.3;
 
-    // Create workers and process faces in parallel
-    const workers = faces.map((_, _index) => {
-        const worker = new Worker(new URL('./boxFaceWorker.ts', import.meta.url), {
-            type: 'module',
-        });
-        // console.log(`Created worker: ${index}`);
-        return worker;
-    });
+    if (isMobile) {
+        // Sequential execution for mobile
+        // console.log('Processing faces sequentially...');
+        for (let index = 0; index < faces.length; index++) {
+            // console.log(`Processing face ${index + 1}/6`);
+            const face = faces[index];
+            const worker = new Worker(new URL('./boxFaceWorker.ts', import.meta.url), {
+                type: 'module',
+            });
 
-    // Wait a bit for workers to initialize
-    await new Promise(resolve => setTimeout(resolve, 100));
+            await new Promise<void>((resolve, reject) => {
+                worker.onerror = (error) => {
+                    console.error(`Worker ${index} error:`, error);
+                    worker.terminate();
+                    reject(error);
+                };
 
-    const facePromises = faces.map((face, index) => {
-        return new Promise<void>((resolve, reject) => {
-            const worker = workers[index];
+                worker.onmessage = (e) => {
+                    const {
+                        faceIndex,
+                        positions: facePositions,
+                        normals: faceNormals,
+                        tangents: faceTangents,
+                        uvs: faceUvs,
+                        indices: faceIndices,
+                        quantizedData: faceQuantizedData,
+                        positionMin: facePositionMin,
+                        positionMax: facePositionMax
+                    } = e.data;
 
-            // Add error handler
-            worker.onerror = (error) => {
-                console.error(`Worker ${index} error:`, error);
-                reject(error);
-            };
+                    const indexOffset = faceIndex * numIndicesPerFace;
+                    mesh.indices.set(faceIndices, indexOffset);
 
-            worker.onmessage = (e) => {
-                const {
-                    faceIndex,
-                    positions: facePositions,
-                    normals: faceNormals,
-                    tangents: faceTangents,
-                    uvs: faceUvs,
-                    indices: faceIndices,
-                    quantizedData: faceQuantizedData,
-                    positionMin: facePositionMin,
-                    positionMax: facePositionMax
-                } = e.data;
+                    if (!quantize) {
+                        const vertexOffset = faceIndex * numVerticesPerFace * 3;
+                        const tangentOffset = faceIndex * numVerticesPerFace * 4;
+                        const uvOffset = faceIndex * numVerticesPerFace * 2;
 
-                //console.log(`Worker ${faceIndex} messaged back ${facePositions.length} positions`);
-                // Copy face data to final arrays
+                        mesh?.positions?.set(facePositions, vertexOffset);
+                        mesh?.normals?.set(faceNormals, vertexOffset);
+                        mesh?.tangents?.set(faceTangents, tangentOffset);
+                        mesh?.uvs?.set(faceUvs, uvOffset);
+                    } else {
+                        mesh.quantizedData?.set(faceQuantizedData, faceIndex * numVerticesPerFace * 8);
+                        mesh.positionMin = vec3.fromValues(facePositionMin[0], facePositionMin[1], facePositionMin[2]);
+                        mesh.positionMax = vec3.fromValues(facePositionMax[0], facePositionMax[1], facePositionMax[2]);
+                    }
 
-                const indexOffset = faceIndex * numIndicesPerFace;
-                mesh.indices.set(faceIndices, indexOffset);
-                if (!quantize) {
-                    const vertexOffset = faceIndex * numVerticesPerFace * 3;
-                    const tangentOffset = faceIndex * numVerticesPerFace * 4;
-                    const uvOffset = faceIndex * numVerticesPerFace * 2;
+                    worker.terminate();
+                    resolve();
+                };
 
-                    mesh?.positions?.set(facePositions, vertexOffset);
-                    mesh?.normals?.set(faceNormals, vertexOffset);
-                    mesh?.tangents?.set(faceTangents, tangentOffset);
-                    mesh?.uvs?.set(faceUvs, uvOffset);
-                } else {
-                    mesh.quantizedData?.set(faceQuantizedData, faceIndex * numVerticesPerFace * 8);
-                    mesh.positionMin = vec3.fromValues(facePositionMin[0], facePositionMin[1], facePositionMin[2]);
-                    mesh.positionMax = vec3.fromValues(facePositionMax[0], facePositionMax[1], facePositionMax[2]);
-                }
+                worker.postMessage({
+                    start: Array.from(face.start),
+                    right: Array.from(face.right),
+                    up: Array.from(face.up),
+                    uvIndex: face.uvIndex,
+                    size: Array.from(size),
+                    radius,
+                    resolution,
+                    faceIndex: index,
+                    numVerticesPerFace,
+                    numIndicesPerFace,
+                    quantize
+                });
+            });
+        }
+    } else {
+        // Parallel execution for desktop
+        // console.log('Processing faces in parallel...');
+        const workers = faces.map((face, index) => {
+            const worker = new Worker(new URL('./boxFaceWorker.ts', import.meta.url), {
+                type: 'module',
+            });
+            return new Promise<void>((resolve, reject) => {
+                worker.onerror = (error) => {
+                    console.error(`Worker ${index} error:`, error);
+                    worker.terminate();
+                    reject(error);
+                };
 
-                worker.terminate();
-                resolve();
-            };
+                worker.onmessage = (e) => {
+                    const {
+                        faceIndex,
+                        positions: facePositions,
+                        normals: faceNormals,
+                        tangents: faceTangents,
+                        uvs: faceUvs,
+                        indices: faceIndices,
+                        quantizedData: faceQuantizedData,
+                        positionMin: facePositionMin,
+                        positionMax: facePositionMax
+                    } = e.data;
 
-            // Send face data to worker
-            //console.log('Sending message to worker', index);
-            worker.postMessage({
-                start: Array.from(face.start),
-                right: Array.from(face.right),
-                up: Array.from(face.up),
-                uvIndex: face.uvIndex,
-                size: Array.from(size),
-                radius,
-                resolution,
-                faceIndex: index,
-                numVerticesPerFace,
-                numIndicesPerFace,
-                quantize
+                    const indexOffset = faceIndex * numIndicesPerFace;
+                    mesh.indices.set(faceIndices, indexOffset);
+
+                    if (!quantize) {
+                        const vertexOffset = faceIndex * numVerticesPerFace * 3;
+                        const tangentOffset = faceIndex * numVerticesPerFace * 4;
+                        const uvOffset = faceIndex * numVerticesPerFace * 2;
+
+                        mesh?.positions?.set(facePositions, vertexOffset);
+                        mesh?.normals?.set(faceNormals, vertexOffset);
+                        mesh?.tangents?.set(faceTangents, tangentOffset);
+                        mesh?.uvs?.set(faceUvs, uvOffset);
+                    } else {
+                        mesh.quantizedData?.set(faceQuantizedData, faceIndex * numVerticesPerFace * 8);
+                        mesh.positionMin = vec3.fromValues(facePositionMin[0], facePositionMin[1], facePositionMin[2]);
+                        mesh.positionMax = vec3.fromValues(facePositionMax[0], facePositionMax[1], facePositionMax[2]);
+                    }
+
+                    worker.terminate();
+                    resolve();
+                };
+
+                worker.postMessage({
+                    start: Array.from(face.start),
+                    right: Array.from(face.right),
+                    up: Array.from(face.up),
+                    uvIndex: face.uvIndex,
+                    size: Array.from(size),
+                    radius,
+                    resolution,
+                    faceIndex: index,
+                    numVerticesPerFace,
+                    numIndicesPerFace,
+                    quantize
+                });
             });
         });
-    });
 
-    // Wait for all faces to be processed
-    await Promise.all(facePromises);
+        await Promise.all(workers);
+        console.log('All faces processed in parallel');
+    }
+
     return mesh;
 }

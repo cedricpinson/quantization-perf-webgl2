@@ -97,7 +97,25 @@ export function generateRandomNormalMap(width: number, height: number): Uint8Arr
 export function createBuffer(gl: WebGL2RenderingContext, data: ArrayBuffer, usage: number): WebGLBuffer {
     const buffer = gl.createBuffer()!;
     gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
-    gl.bufferData(gl.ARRAY_BUFFER, data, usage);
+    // const chunkSize = 128 * 1024 * 1024; // 128MB in bytes
+    const totalSize = data.byteLength;
+
+    // First allocate the full buffer
+    console.log(`Allocating Vertex Buffer ${totalSize / 1024 / 1024} MB`);
+    gl.bufferData(gl.ARRAY_BUFFER, totalSize, usage);
+    gl.bufferSubData(gl.ARRAY_BUFFER, 0, data);
+
+    // // Then upload in chunks
+    // for (let offset = 0; offset < totalSize; offset += chunkSize) {
+    //     const chunk = new Uint8Array(data, offset, Math.min(chunkSize, totalSize - offset));
+    //     gl.bufferSubData(gl.ARRAY_BUFFER, offset, chunk);
+    // }
+    const error = gl.getError();
+    if (error !== gl.NO_ERROR) {
+        console.error('WebGL error after buffer allocation:', error);
+        throw new Error('Failed to allocate WebGL buffer');
+    }
+
     return buffer;
 }
 

@@ -165,7 +165,7 @@ export class PerformanceMonitor {
         return performance.now() - this.lastDisplayUpdate >= this.displayUpdateInterval;
     }
 
-    updateDisplay(numVertices: number, numTriangles: number, vertexBytes: number, quantized: boolean) {
+    updateDisplay(numVertices: number, numTriangles: number, vertexBytes: number, quantized: boolean, version: string) {
         // Calculate averages for each named measurement
         const averages = Object.entries(this.measurementTimes).map(([name, times]) => {
             const sum = times.reduce((a, b) => a + b, 0);
@@ -184,6 +184,7 @@ export class PerformanceMonitor {
 
         this.performanceDiv.style.textAlign = 'left';
         this.performanceDiv.innerHTML = [
+            `Version: ${version}`,
             `Format: ${format}`,
             `Mesh Vertex size: ${vertexBytes} bytes`,
             `Num Vertices: ${formattedVertices}`,

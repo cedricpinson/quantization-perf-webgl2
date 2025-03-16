@@ -77,7 +77,7 @@ self.onmessage = async (e: MessageEvent<SphereData>) => {
 
     const result: any = {
         indices,
-        vertexBytes: quantize ? 24 : 3 * 4 + 3 * 4 + 4 * 4 + 2 * 4,
+        vertexBytes: quantize ? 16 : 3 * 4 + 3 * 4 + 4 * 4 + 2 * 4,
         numVertices
     };
 

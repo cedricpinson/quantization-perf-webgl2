@@ -26,6 +26,7 @@ interface UIParams {
     isPaused: boolean;
     displayMode: 'default' | 'normal' | 'tangent' | 'uv';
     zoom: number;
+    version: string;
 }
 
 function getUrlParams(): Partial<UIParams> {
@@ -100,6 +101,7 @@ function main() {
         isPaused: urlParams.isPaused ?? false,
         displayMode: urlParams.displayMode ?? 'default',
         zoom: urlParams.zoom ?? 0.1,
+        version: 'v2',
     };
 
     // Get the controls container
@@ -200,7 +202,20 @@ function main() {
 
     async function buildMesh() {
         const currentMesh = await generateMesh(params.shape, params.resolution, params.useQuantizedMesh);
-        console.log(`using mesh with ${currentMesh.numVertices} vertices and ${currentMesh.indices.length / 3} triangles`);
+        console.log(`using mesh ${params.useQuantizedMesh ? 'quantized' : 'uncompressed'} ${currentMesh.numVertices} vertices and ${currentMesh.indices.length / 3} triangles`);
+        if (params.useQuantizedMesh) {
+            const bytes = currentMesh.quantizedData?.byteLength ?? 0;
+            console.log(`Vertex Quantized: ${bytes / 1024 / 1024} MB`);
+        } else {
+            let bytes = currentMesh?.positions?.byteLength ?? 0;
+            console.log(`Vertex Uncompressed Positions: ${bytes / 1024 / 1024} MB`);
+            bytes = currentMesh?.normals?.byteLength ?? 0;
+            console.log(`Vertex Uncompressed Normals: ${bytes / 1024 / 1024} MB`);
+            bytes = currentMesh?.tangents?.byteLength ?? 0;
+            console.log(`Vertex Uncompressed Tangents: ${bytes / 1024 / 1024} MB`);
+            bytes = currentMesh?.uvs?.byteLength ?? 0;
+            console.log(`Vertex Uncompressed UVs: ${bytes / 1024 / 1024} MB`);
+        }
         return currentMesh;
     }
 
@@ -343,7 +358,7 @@ function main() {
             const numVertices = params.useQuantizedMesh ? meshState.gpuQuantizedMesh?.numVertices ?? 0 : meshState.gpuUncompressedMesh?.numVertices ?? 0;
             const numIndices = params.useQuantizedMesh ? meshState.gpuQuantizedMesh?.numIndices ?? 0 : meshState.gpuUncompressedMesh?.numIndices ?? 0;
             const vertexBytes = params.useQuantizedMesh ? meshState.gpuQuantizedMesh?.vertexBytes ?? 0 : meshState.gpuUncompressedMesh?.vertexBytes ?? 0;
-            performance.updateDisplay(numVertices, numIndices / 3, vertexBytes, params.useQuantizedMesh);
+            performance.updateDisplay(numVertices, numIndices / 3, vertexBytes, params.useQuantizedMesh, params.version);
         }
 
         requestAnimationFrame(() => render());
