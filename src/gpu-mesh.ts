@@ -105,20 +105,19 @@ export class GpuUncompressedMesh {
 
 export class GpuQuantizedMesh {
     private buffers: QuantizedBuffers;
-    private locations: {
-        positionMin: WebGLUniformLocation | null;
-        positionMax: WebGLUniformLocation | null;
-        compressedData: number[];
-    };
     numIndices: number;
     private positionMin: vec3;
     private positionMax: vec3;
     numVertices: number;
     vertexBytes: number;
+    uniformsLocations: Map<WebGLProgram, {
+        positionMin: WebGLUniformLocation | null;
+        positionMax: WebGLUniformLocation | null;
+        compressedData: number[];
+    }>;
 
     constructor(
         gl: WebGL2RenderingContext,
-        program: WebGLProgram,
         mesh: Mesh
     ) {
 
@@ -138,39 +137,58 @@ export class GpuQuantizedMesh {
             index: indexBuffer
         };
 
-        // Get uniform and attribute locations
-        this.locations = {
-            positionMin: gl.getUniformLocation(program, 'uPositionMin'),
-            positionMax: gl.getUniformLocation(program, 'uPositionMax'),
-            compressedData: []
-        };
+        this.uniformsLocations = new Map<WebGLProgram, {
+            positionMin: WebGLUniformLocation | null;
+            positionMax: WebGLUniformLocation | null;
+            compressedData: number[];
+        }>();
 
-        // Get compressed data attribute locations
-        for (let i = 0; i < 4; i++) {
-            const loc = gl.getAttribLocation(program, `aCompressedData${i}`);
-            this.locations.compressedData.push(loc);
-        }
 
         this.numIndices = mesh.indices.length;
         this.positionMin = mesh.positionMin;
         this.positionMax = mesh.positionMax;
     }
+    computeUniformsLocations(gl: WebGL2RenderingContext, program: WebGLProgram): {
+        positionMin: WebGLUniformLocation | null;
+        positionMax: WebGLUniformLocation | null;
+        compressedData: number[];
+    } {
+        const uniformsLocations = {
+            positionMin: gl.getUniformLocation(program, 'uPositionMin'),
+            positionMax: gl.getUniformLocation(program, 'uPositionMax'),
+            compressedData: [] as number[]
+        };
 
-    bind(gl: WebGL2RenderingContext): number {
+        for (let i = 0; i < 4; i++) {
+            const loc = gl.getAttribLocation(program, `aCompressedData${i}`);
+            uniformsLocations.compressedData.push(loc);
+        }
+
+        this.uniformsLocations.set(program, uniformsLocations);
+        return uniformsLocations;
+    }
+
+    bind(gl: WebGL2RenderingContext, program: WebGLProgram): number {
         // Set up vertex attributes for compressed data
         gl.bindBuffer(gl.ARRAY_BUFFER, this.buffers.data);
 
         // Use stored locations
-        for (const loc of this.locations.compressedData) {
-            gl.enableVertexAttribArray(loc);
-            gl.vertexAttribIPointer(loc, 2, gl.UNSIGNED_SHORT, 16, loc * 4);
+        let uniformsLocations = this.uniformsLocations.get(program);
+        if (!uniformsLocations) {
+            uniformsLocations = this.computeUniformsLocations(gl, program);
+        }
+
+        for (let i = 0; i < 4; i++) {
+            const loc = uniformsLocations.compressedData[i];
+            gl.enableVertexAttribArray(i);
+            gl.vertexAttribIPointer(loc, 2, gl.UNSIGNED_SHORT, 16, i * 4);
         }
 
         gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.buffers.index);
 
         // Set position bounds uniforms
-        gl.uniform3fv(this.locations.positionMin, this.positionMin);
-        gl.uniform3fv(this.locations.positionMax, this.positionMax);
+        gl.uniform3fv(uniformsLocations.positionMin, this.positionMin);
+        gl.uniform3fv(uniformsLocations.positionMax, this.positionMax);
 
         return this.numIndices;
     }

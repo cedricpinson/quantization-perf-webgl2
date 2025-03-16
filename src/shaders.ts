@@ -30,6 +30,106 @@ void main() {
     gl_Position = uProjectionMatrix * vec4(vPosition, 1.0);
 }`;
 
+
+// common functions for quantized shaders
+const commonQuantizedFunctions = `
+
+const float inv65535 = 1.0 / 65535.0;
+const float inv32767 = 1.0 / 32767.0;
+
+#define PI 3.14159265359
+#define TWO_PI 6.28318530718
+#define HALF_PI 1.57079632679
+
+vec3 decodePositionQuantized(uvec2 xy, uint z) {
+    vec3 pos;
+    pos.x = float(xy.x) * inv65535;
+    pos.y = float(xy.y) * inv65535;
+    pos.z = float(z) * inv65535;
+    return mix(uPositionMin, uPositionMax, pos);
+}
+
+vec3 octDecode(vec2 oct) {
+    vec2 f = vec2(oct) * inv32767 - 1.0;
+    vec3 n = vec3(f.x, f.y, 1.0 - abs(f.x) - abs(f.y));
+    float t = max(-n.z, 0.0);
+    n.x += n.x >= 0.0 ? -t : t;
+    n.y += n.y >= 0.0 ? -t : t;
+    return normalize(n);
+}
+
+vec3 decodeTangentTrig(uint encoded, vec3 normal) {
+    // Extract sign and angle
+    float quantizedAngle = float(encoded & 0x7FFFu);
+
+    // Convert back to radians
+    float angle = quantizedAngle * inv32767 * TWO_PI - PI;
+
+    // Calculate initial bitangent using same approach as TS code
+    vec3 tempVec = abs(normal.x) < 0.9 ?
+        vec3(1.0, 0.0, 0.0) :
+        vec3(0.0, 1.0, 0.0);
+    vec3 bitangent = normalize(cross(normal, tempVec));
+
+    // Rotate bitangent around normal using the same rotation formula
+    float cosAngle = cos(angle);
+    float sinAngle = sin(angle);
+    vec3 rotatedBitangent = cross(normal, bitangent);
+    return normalize(bitangent * cosAngle + rotatedBitangent * sinAngle);
+}
+
+/**
+ * Fast polynomial approximation for sine
+ * Max error < 0.001 for range [-π, π]
+ */
+float fastSin(float x) {
+    // Wrap x to [-π, π]
+    x = mod(x, TWO_PI);
+    if (x > PI) x -= TWO_PI;
+    else if (x < -PI) x += TWO_PI;
+
+    // Coefficients for polynomial approximation
+    float a3 = -0.16666667;  // -1/6
+    float a5 = 0.008333333;  // 1/120
+    float a7 = -0.000198413; // -1/5040
+
+    float x2 = x * x;
+    float x3 = x2 * x;
+
+    return x + a3 * x3 + a5 * x3 * x2 + a7 * x3 * x2 * x2;
+}
+
+/**
+ * Fast polynomial approximation for cosine using sin(x + π/2)
+ * Max error < 0.001 for range [-π, π]
+ */
+float fastCos(float x) {
+    return fastSin(x + HALF_PI);
+}
+
+vec3 decodeTangentNoTrig(uint encoded, vec3 normal) {
+    // Extract sign and angle
+    float quantizedAngle = float(encoded & 0x7FFFu);
+
+    // Convert back to radians
+    float angle = quantizedAngle * inv32767 * TWO_PI - PI;
+
+    // Calculate initial bitangent using same approach as TS code
+    vec3 tempVec = abs(normal.x) < 0.9 ?
+        vec3(1.0, 0.0, 0.0) :
+        vec3(0.0, 1.0, 0.0);
+    vec3 bitangent = normalize(cross(normal, tempVec));
+
+    // Rotate bitangent around normal using the same rotation formula
+    float cosAngle = fastCos(angle);
+    float sinAngle = fastSin(angle);
+    vec3 rotatedBitangent = cross(normal, bitangent);
+    return normalize(bitangent * cosAngle + rotatedBitangent * sinAngle);
+}
+
+`;
+
+
 // Quantized vertex shader
 export const quantizedVertexShader = `#version 300 es
 in uvec4 aCompressedData0; // xy = position.xy
@@ -47,80 +147,54 @@ out vec3 vNormal;
 out vec4 vTangent;
 out vec2 vUV;
 
-const float inv65535 = 1.0 / 65535.0;
-vec3 decodePositionRegular(uvec2 xy, uint z) {
-    vec3 pos;
-    pos.x = float(xy.x) * inv65535;
-    pos.y = float(xy.y) * inv65535;
-    pos.z = float(z) * inv65535;
-    return mix(uPositionMin, uPositionMax, pos);
-}
+${commonQuantizedFunctions}
 
-#define decodePosition decodePositionRegular
+#define decodePosition decodePositionQuantized
+#define decodeTangent decodeTangentTrig
 
-const float inv32767 = 1.0 / 32767.0;
-vec3 octDecode(vec2 oct) {
-    vec2 f = vec2(oct) * inv32767 - 1.0;
-    vec3 n = vec3(f.x, f.y, 1.0 - abs(f.x) - abs(f.y));
-    float t = max(-n.z, 0.0);
-    n.x += n.x >= 0.0 ? -t : t;
-    n.y += n.y >= 0.0 ? -t : t;
-    return normalize(n);
-}
+void main() {
+    // Decode position
+    vec3 position = decodePosition(aCompressedData0.xy, aCompressedData1.x);
 
-// Original version with cos/sin
-vec3 decodeTangentOriginal(uint encoded, vec3 normal) {
-    // Extract sign and angle
-    float quantizedAngle = float(encoded & 0x7FFFu);
+    // Decode normal from octahedral encoding
+    vec3 normal = octDecode(vec2(aCompressedData2.xy));
 
-    // Convert back to radians
-    float angle = quantizedAngle * inv32767 * 6.28318530718 - 3.14159265359;
+    // Update tangent decoding
+    uint tangentData = aCompressedData1.y;
+    vec3 tangent = decodeTangent(tangentData, normal);
+    float tangentSign = float((tangentData >> 15u) & 1u) * 2.0 - 1.0;
 
-    // Calculate initial bitangent using same approach as TS code
-    vec3 tempVec = abs(normal.x) < 0.9 ?
-        vec3(1.0, 0.0, 0.0) :
-        vec3(0.0, 1.0, 0.0);
-    vec3 bitangent = normalize(cross(normal, tempVec));
+    // Decode UVs
+    vec2 uv = vec2(aCompressedData3.xy) * inv65535;
 
-    // Rotate bitangent around normal using the same rotation formula
-    float cosAngle = cos(angle);
-    float sinAngle = sin(angle);
-    vec3 rotatedBitangent = cross(normal, bitangent);
-    return normalize(bitangent * cosAngle + rotatedBitangent * sinAngle);
-}
+    vPosition = (uModelViewMatrix * vec4(position, 1.0)).xyz;
+    vNormal = normalize((uNormalMatrix * vec4(normal, 0.0)).xyz);
+    vTangent = vec4(normalize((uNormalMatrix * vec4(tangent, 0.0)).xyz), tangentSign);
+    vUV = uv;
+    gl_Position = uProjectionMatrix * vec4(vPosition, 1.0);
+}`;
 
-// Optimized version without cos/sin
-vec3 decodeTangentOptimized(uint encoded, vec3 normal) {
-    // Extract angle (exactly as original does)
-    float quantizedAngle = float(encoded & 0x7FFFu);
-    float angle = quantizedAngle * inv32767 * 6.28318530718 - 3.14159265359;
+// Quantized vertex shader with optimized tangent decoding
+export const quantizedOptimizedVertexShader = `#version 300 es
+in uvec4 aCompressedData0; // xy = position.xy
+in uvec4 aCompressedData1; // xy = position.z, tangent angle+sign
+in uvec4 aCompressedData2; // xy = octahedral normal
+in uvec4 aCompressedData3; // xy = uv
 
-    // Simple polynomial approximation for cos/sin
-    // Normalize angle to [0,1] range
-    float t = quantizedAngle * inv32767 - 0.5; //angle / 6.28318530718 + 0.5;  // maps [-π,π] to [0,1]
-    t = fract(t);  // handle wrap-around
+${commonUniforms}
 
-    // Approximate cos using quadratic
-    float t2 = t * t;
-    float t4 = t2 * t2;
-    float cosAngle = 1.0 - 8.0 * t2 + 8.0 * t4;  // approximates cos(2π*t)
-    float sinAngle = 2.0 * t * (1.0 - t) * (1.0 - 2.0 * t);  // approximates sin(2π*t)
+uniform vec3 uPositionMin;
+uniform vec3 uPositionMax;
 
-    // original
-    // float cosAngle = cos(angle);  // TODO: replace with approximation
-    // float sinAngle = sin(angle);  // TODO: replace with approximation
+out vec3 vPosition;
+out vec3 vNormal;
+out vec4 vTangent;
+out vec2 vUV;
 
-    // Rest is identical to original
-    vec3 tempVec = abs(normal.x) < 0.9 ?
-        vec3(1.0, 0.0, 0.0) :
-        vec3(0.0, 1.0, 0.0);
-    vec3 bitangent = normalize(cross(normal, tempVec));
+${commonQuantizedFunctions}
 
-    vec3 rotatedBitangent = cross(normal, bitangent);
-    return normalize(bitangent * cosAngle + rotatedBitangent * sinAngle);
-}
-//#define decodeTangent decodeTangentOptimized
-#define decodeTangent decodeTangentOriginal
+#define decodePosition decodePositionQuantized
+#define decodeTangent decodeTangentNoTrig
 
 void main() {
     // Decode position

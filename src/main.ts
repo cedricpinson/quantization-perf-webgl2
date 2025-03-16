@@ -14,6 +14,7 @@ import {
 import {
     uncompressedVertexShader,
     quantizedVertexShader,
+    quantizedOptimizedVertexShader,
     fragmentShader
 } from './shaders';
 import { generateMesh } from './mesh';
@@ -27,6 +28,7 @@ interface UIParams {
     displayMode: 'default' | 'normal' | 'tangent' | 'uv';
     zoom: number;
     version: string;
+    noTrig: boolean;
 }
 
 function getUrlParams(): Partial<UIParams> {
@@ -38,6 +40,7 @@ function getUrlParams(): Partial<UIParams> {
     const isPaused = params.get('isPaused');
     const displayMode = params.get('displayMode') as 'default' | 'normal' | 'tangent' | 'uv' | null;
     const zoom = params.get('zoom');
+    const noTrig = params.get('noTrig');
 
     return {
         resolution: resolution ? Math.min(Math.max(parseInt(resolution), 512), 8192) : undefined,
@@ -46,7 +49,8 @@ function getUrlParams(): Partial<UIParams> {
         rotationSpeed: rotationSpeed ? parseFloat(rotationSpeed) : undefined,
         isPaused: isPaused ? isPaused === 'true' : undefined,
         displayMode: displayMode ?? 'default',
-        zoom: zoom ? parseFloat(zoom) : undefined
+        zoom: zoom ? parseFloat(zoom) : undefined,
+        noTrig: noTrig ? noTrig === 'true' : undefined
     };
 }
 
@@ -102,6 +106,7 @@ function main() {
         displayMode: urlParams.displayMode ?? 'default',
         zoom: urlParams.zoom ?? 0.1,
         version: 'v2',
+        noTrig: urlParams.noTrig ?? true,
     };
 
     // Get the controls container
@@ -159,9 +164,14 @@ function main() {
         label: 'Use Quantized Mesh'
     });
 
+    pane.addBinding(params, 'noTrig', {
+        label: 'No Trig'
+    });
+
     pane.addBinding(params, 'isPaused', {
         label: 'Pause'
     });
+
 
     // Update URL when parameters change
     pane.on('change', () => {
@@ -180,6 +190,14 @@ function main() {
         createShader(gl, gl.VERTEX_SHADER, quantizedVertexShader),
         createShader(gl, gl.FRAGMENT_SHADER, fragmentShader)
     );
+    (quantizedProgram as any)['optimized_version'] = false;
+
+    const quantizedOptimizedProgram = createProgram(
+        gl,
+        createShader(gl, gl.VERTEX_SHADER, quantizedOptimizedVertexShader),
+        createShader(gl, gl.FRAGMENT_SHADER, fragmentShader)
+    );
+    (quantizedOptimizedProgram as any)['optimized_version'] = true;
 
     // Create textures
     const size = 256;
@@ -239,7 +257,7 @@ function main() {
         state.gpuUncompressedMesh = null;
 
         if (params.useQuantizedMesh) {
-            state.gpuQuantizedMesh = new GpuQuantizedMesh(gl, quantizedProgram, currentMesh);
+            state.gpuQuantizedMesh = new GpuQuantizedMesh(gl, currentMesh);
         } else {
             state.gpuUncompressedMesh = new GpuUncompressedMesh(gl, uncompressedProgram, currentMesh);
         }
@@ -313,8 +331,11 @@ function main() {
             // during normal state use the selected program
             useQuantizedMesh = params.useQuantizedMesh;
         }
-        const program = useQuantizedMesh ? quantizedProgram : uncompressedProgram;
+        const program = useQuantizedMesh ?
+            (params.noTrig ? quantizedOptimizedProgram : quantizedProgram) :
+            uncompressedProgram;
         gl.useProgram(program);
+
         // Set uniforms
         const mvLoc = gl.getUniformLocation(program, 'uModelViewMatrix');
         const projLoc = gl.getUniformLocation(program, 'uProjectionMatrix');
@@ -341,7 +362,7 @@ function main() {
         // Set up and draw mesh
         let indexCount: number;
         if (useQuantizedMesh) {
-            indexCount = meshState.gpuQuantizedMesh?.bind(gl) ?? 0;
+            indexCount = meshState.gpuQuantizedMesh?.bind(gl, program) ?? 0;
         } else {
             indexCount = meshState.gpuUncompressedMesh?.bind(gl) ?? 0;
         }

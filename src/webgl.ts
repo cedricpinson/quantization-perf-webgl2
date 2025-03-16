@@ -5,6 +5,11 @@ export function createShader(gl: WebGL2RenderingContext, type: number, source: s
 
     if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
         console.error(`Shader compile error: ${gl.getShaderInfoLog(shader)}`);
+        // Split the source into lines and add line numbers
+        const numberedLines = source.split('\n').map((line, index) =>
+            `${index + 1}: ${line}`
+        ).join('\n');
+        console.error(numberedLines);
         gl.deleteShader(shader);
         throw new Error('Shader compilation failed');
     }
