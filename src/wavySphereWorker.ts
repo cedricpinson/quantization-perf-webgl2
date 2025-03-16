@@ -1,13 +1,14 @@
-import { quantizeMesh } from './quantize';
+import { quantizeStandard16bit, quantizeQuat12bit, QuantizationFormat } from './quantize';
+
 interface WavySphereData {
     resolution: number;
-    quantize: boolean;
+    quantizationFormat: QuantizationFormat;
 }
 
 // Import quantizeMesh dynamically to ensure it's loaded before use
 self.onmessage = async (e: MessageEvent<WavySphereData>) => {
     const start = performance.now();
-    const { resolution, quantize } = e.data;
+    const { resolution, quantizationFormat } = e.data;
 
     const numVertices = (resolution + 1) * (resolution + 1);
     const positions = new Float32Array(numVertices * 3);
@@ -85,15 +86,26 @@ self.onmessage = async (e: MessageEvent<WavySphereData>) => {
 
     const result: any = {
         indices,
-        vertexBytes: quantize ? 16 : 3 * 4 + 3 * 4 + 4 * 4 + 2 * 4,
+        vertexBytes: quantizationFormat === QuantizationFormat.Uncompressed ? 3 * 4 + 3 * 4 + 4 * 4 + 2 * 4 : 16,
         numVertices
     };
 
-    if (quantize) {
-        const { compressedData, positionMin, positionMax } = quantizeMesh(numVertices, positions, normals, tangents, uvs, null, null);
-        result.quantizedData = compressedData;
-        result.positionMin = positionMin;
-        result.positionMax = positionMax;
+    if (quantizationFormat !== QuantizationFormat.Uncompressed) {
+        let meshQuantized;
+        switch (quantizationFormat) {
+            case QuantizationFormat.Quaternion12Bits:
+                meshQuantized = quantizeQuat12bit(numVertices, positions, normals, tangents, uvs, null, null);
+                result.vertexBytes = 16;
+                break;
+            case QuantizationFormat.Angle16Bits:
+            default:
+                meshQuantized = quantizeStandard16bit(numVertices, positions, normals, tangents, uvs, null, null);
+                result.vertexBytes = 16;
+                break;
+        }
+        result.quantizedData = meshQuantized.compressedData;
+        result.positionMin = meshQuantized.positionMin;
+        result.positionMax = meshQuantized.positionMax;
     } else {
         result.positions = positions;
         result.normals = normals;
@@ -107,7 +119,8 @@ self.onmessage = async (e: MessageEvent<WavySphereData>) => {
 
     self.postMessage(result, {
         transfer: [
-            ...(quantize ? [result.quantizedData.buffer, indices.buffer] : [positions.buffer, normals.buffer, tangents.buffer, uvs.buffer, indices.buffer]),
+            ...(quantizationFormat === QuantizationFormat.Uncompressed ? [positions.buffer, normals.buffer, tangents.buffer, uvs.buffer] : [result.quantizedData.buffer]),
+            indices.buffer
         ]
     });
 };

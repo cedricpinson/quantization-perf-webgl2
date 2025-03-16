@@ -33,16 +33,29 @@ npm run dev
 
 ## Technical Details
 
-### Uncompressed Mesh Format 48 bytes
+### Uncompressed Mesh Format: 48 bytes
 - Positions: vec3 (x,y,z)
 - Normals: vec3 (x,y,z)
 - Tangents: vec4 (x,y,z,w)
 - UVs: vec2 (u,v)
 
-### Quantized Mesh Format 16 bytes
+### Quantized Mesh Format 1: 16 bytes
 - Positions: 3x16bits (quantized on mesh bounding box)
 - Normals: 2x16bits (octahedral encoding)
 - Tangents: 1x16bits (1 bit sign + 15 bits angle)
+- UVs: 2x16bits (quantized 0-1 range)
+
+### Quantized Mesh Format 2: 16 bytes
+this one require to have tangent frame without sign meaning splitting vertexes if needed
+https://www.jeremyong.com/graphics/2023/01/09/tangent-spaces-and-diamond-encoding/
+- Positions: 3x16bits (quantized on mesh bounding box)
+- Normals: 2x12bits (octahedral encoding)
+- Tangents: 2x12bits (octahedral encoding)
+- UVs: 2x16bits (quantized 0-1 range)
+
+### Quantized Mesh Format 3: 16 bytes
+- Positions: 3x16bits (quantized on mesh bounding box)
+- Quat: 4x12bits (tbn packer)[https://github.com/fuzhenn/tbn-packer]
 - UVs: 2x16bits (quantized 0-1 range)
 
 Total: 8x16bits per vertex (16 bytes) vs 48 bytes for uncompressed format

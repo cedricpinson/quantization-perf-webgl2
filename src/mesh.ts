@@ -1,4 +1,5 @@
 import { vec3 } from 'gl-matrix';
+import { QuantizationFormat } from './quantize';
 
 export interface Mesh {
     // Common attributes
@@ -20,7 +21,7 @@ export interface Mesh {
 
 export type ShapeType = 'sphere' | 'wavySphere' | 'roundedBox';
 
-async function generateSphere(resolution: number, quantize: boolean = false): Promise<Mesh> {
+async function generateSphere(resolution: number, quantizationFormat: QuantizationFormat): Promise<Mesh> {
     const worker = new Worker(new URL('./sphereWorker.ts', import.meta.url), {
         type: 'module',
     });
@@ -30,11 +31,11 @@ async function generateSphere(resolution: number, quantize: boolean = false): Pr
             worker.terminate();
             resolve(e.data);
         };
-        worker.postMessage({ resolution, quantize });
+        worker.postMessage({ resolution, quantizationFormat });
     });
 }
 
-async function generateWavySphere(resolution: number, quantize: boolean = false): Promise<Mesh> {
+async function generateWavySphere(resolution: number, quantizationFormat: QuantizationFormat): Promise<Mesh> {
     const worker = new Worker(new URL('./wavySphereWorker.ts', import.meta.url), {
         type: 'module',
     });
@@ -44,24 +45,28 @@ async function generateWavySphere(resolution: number, quantize: boolean = false)
             worker.terminate();
             resolve(e.data);
         };
-        worker.postMessage({ resolution, quantize });
+        worker.postMessage({ resolution, quantizationFormat });
     });
 }
 
-export async function generateMesh(shape: ShapeType, resolution: number, quantize: boolean = false): Promise<Mesh> {
+export async function generateMesh(
+    shape: ShapeType,
+    resolution: number,
+    quantizationFormat: QuantizationFormat
+): Promise<Mesh> {
     switch (shape) {
         case 'sphere':
-            return generateSphere(resolution, quantize);
+            return generateSphere(resolution, quantizationFormat);
         case 'wavySphere':
-            return generateWavySphere(resolution, quantize);
+            return generateWavySphere(resolution, quantizationFormat);
         case 'roundedBox':
-            return generateRoundedBox(resolution / 2, quantize);
+            return generateRoundedBox(resolution / 2, quantizationFormat);
         default:
-            return generateSphere(resolution, quantize);
+            return generateSphere(resolution, quantizationFormat);
     }
 }
 
-async function generateRoundedBox(resolution: number, quantize: boolean = false): Promise<Mesh> {
+async function generateRoundedBox(resolution: number, quantizationFormat: QuantizationFormat): Promise<Mesh> {
     // Simple mobile detection
     const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
     console.log(`Executing ${isMobile ? 'sequential (mobile)' : 'parallel (desktop)'} version of rounded box generation`);
@@ -118,7 +123,7 @@ async function generateRoundedBox(resolution: number, quantize: boolean = false)
 
     // Create final arrays
     let mesh: Mesh;
-    if (!quantize) {
+    if (quantizationFormat === QuantizationFormat.Uncompressed) {
         mesh = {
             positions: new Float32Array(numVertices * 3),
             normals: new Float32Array(numVertices * 3),
@@ -144,9 +149,8 @@ async function generateRoundedBox(resolution: number, quantize: boolean = false)
 
     if (isMobile) {
         // Sequential execution for mobile
-        // console.log('Processing faces sequentially...');
+        console.log('Processing faces sequentially...');
         for (let index = 0; index < faces.length; index++) {
-            // console.log(`Processing face ${index + 1}/6`);
             const face = faces[index];
             const worker = new Worker(new URL('./boxFaceWorker.ts', import.meta.url), {
                 type: 'module',
@@ -175,7 +179,7 @@ async function generateRoundedBox(resolution: number, quantize: boolean = false)
                     const indexOffset = faceIndex * numIndicesPerFace;
                     mesh.indices.set(faceIndices, indexOffset);
 
-                    if (!quantize) {
+                    if (quantizationFormat === QuantizationFormat.Uncompressed) {
                         const vertexOffset = faceIndex * numVerticesPerFace * 3;
                         const tangentOffset = faceIndex * numVerticesPerFace * 4;
                         const uvOffset = faceIndex * numVerticesPerFace * 2;
@@ -205,13 +209,13 @@ async function generateRoundedBox(resolution: number, quantize: boolean = false)
                     faceIndex: index,
                     numVerticesPerFace,
                     numIndicesPerFace,
-                    quantize
+                    quantizationFormat
                 });
             });
         }
     } else {
         // Parallel execution for desktop
-        // console.log('Processing faces in parallel...');
+        console.log('Processing faces in parallel...');
         const workers = faces.map((face, index) => {
             const worker = new Worker(new URL('./boxFaceWorker.ts', import.meta.url), {
                 type: 'module',
@@ -239,7 +243,7 @@ async function generateRoundedBox(resolution: number, quantize: boolean = false)
                     const indexOffset = faceIndex * numIndicesPerFace;
                     mesh.indices.set(faceIndices, indexOffset);
 
-                    if (!quantize) {
+                    if (quantizationFormat === QuantizationFormat.Uncompressed) {
                         const vertexOffset = faceIndex * numVerticesPerFace * 3;
                         const tangentOffset = faceIndex * numVerticesPerFace * 4;
                         const uvOffset = faceIndex * numVerticesPerFace * 2;
@@ -269,7 +273,7 @@ async function generateRoundedBox(resolution: number, quantize: boolean = false)
                     faceIndex: index,
                     numVerticesPerFace,
                     numIndicesPerFace,
-                    quantize
+                    quantizationFormat
                 });
             });
         });

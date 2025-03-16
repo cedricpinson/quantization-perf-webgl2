@@ -17,19 +17,20 @@ interface QuantizedBuffers {
 
 export class GpuUncompressedMesh {
     private buffers: UncompressedBuffers;
-    private locations: {
-        position: number;
-        normal: number;
-        tangent: number;
-        uv: number;
-    };
+    uniformsLocations: Map<WebGLProgram, {
+        attributes: {
+            position: number;
+            normal: number;
+            tangent: number;
+            uv: number;
+        };
+    }>;
     numIndices: number;
     numVertices: number;
     vertexBytes: number;
 
     constructor(
         gl: WebGL2RenderingContext,
-        program: WebGLProgram,
         mesh: Mesh
     ) {
         if (!mesh.positions || !mesh.normals || !mesh.tangents || !mesh.uvs || !mesh.indices) {
@@ -40,17 +41,20 @@ export class GpuUncompressedMesh {
         this.vertexBytes = mesh.vertexBytes;
         this.numIndices = mesh.indices.length;
 
+        this.uniformsLocations = new Map<WebGLProgram, {
+            attributes: {
+                position: number;
+                normal: number;
+                tangent: number;
+                uv: number;
+            };
+        }>();
+
         // Create buffers
         const positionBuffer = createBuffer(gl, mesh.positions, gl.STATIC_DRAW);
         const normalBuffer = createBuffer(gl, mesh.normals, gl.STATIC_DRAW);
         const tangentBuffer = createBuffer(gl, mesh.tangents, gl.STATIC_DRAW);
-        // for (let i = 0; i < mesh.tangents.length / 4; i++) {
-        //     const a = mesh.tangents[i * 4 + 0];
-        //     const b = mesh.tangents[i * 4 + 1];
-        //     const c = mesh.tangents[i * 4 + 2];
-        //     const d = mesh.tangents[i * 4 + 3];
-        //     console.log(a, b, c, d);
-        // }
+
         const uvBuffer = createBuffer(gl, mesh.uvs, gl.STATIC_DRAW);
         const indexBuffer = createIndexBuffer(gl, mesh.indices, gl.STATIC_DRAW);
 
@@ -61,32 +65,51 @@ export class GpuUncompressedMesh {
             uv: uvBuffer,
             index: indexBuffer
         };
-        // Get attribute locations
-        this.locations = {
-            position: gl.getAttribLocation(program, 'aPosition'),
-            normal: gl.getAttribLocation(program, 'aNormal'),
-            tangent: gl.getAttribLocation(program, 'aTangent'),
-            uv: gl.getAttribLocation(program, 'aUV')
-        };
     }
 
-    bind(gl: WebGL2RenderingContext): number {
+    computeUniformsLocations(gl: WebGL2RenderingContext, program: WebGLProgram): {
+        attributes: {
+            position: number;
+            normal: number;
+            tangent: number;
+            uv: number;
+        }
+    } {
+        const locations = {
+            attributes: {
+                position: gl.getAttribLocation(program, 'aPosition'),
+                normal: gl.getAttribLocation(program, 'aNormal'),
+                tangent: gl.getAttribLocation(program, 'aTangent'),
+                uv: gl.getAttribLocation(program, 'aUV')
+            }
+        };
+
+        return locations;
+    }
+
+    bind(gl: WebGL2RenderingContext, program: WebGLProgram): number {
+        // Use stored locations
+        let uniformsLocations = this.uniformsLocations.get(program);
+        if (!uniformsLocations) {
+            uniformsLocations = this.computeUniformsLocations(gl, program);
+        }
+
         // Set up vertex attributes
         gl.bindBuffer(gl.ARRAY_BUFFER, this.buffers.position);
-        gl.enableVertexAttribArray(this.locations.position);
-        gl.vertexAttribPointer(this.locations.position, 3, gl.FLOAT, false, 0, 0);
+        gl.enableVertexAttribArray(uniformsLocations.attributes.position);
+        gl.vertexAttribPointer(uniformsLocations.attributes.position, 3, gl.FLOAT, false, 0, 0);
 
         gl.bindBuffer(gl.ARRAY_BUFFER, this.buffers.normal);
-        gl.enableVertexAttribArray(this.locations.normal);
-        gl.vertexAttribPointer(this.locations.normal, 3, gl.FLOAT, false, 0, 0);
+        gl.enableVertexAttribArray(uniformsLocations.attributes.normal);
+        gl.vertexAttribPointer(uniformsLocations.attributes.normal, 3, gl.FLOAT, false, 0, 0);
 
         gl.bindBuffer(gl.ARRAY_BUFFER, this.buffers.tangent);
-        gl.enableVertexAttribArray(this.locations.tangent);
-        gl.vertexAttribPointer(this.locations.tangent, 4, gl.FLOAT, false, 0, 0);
+        gl.enableVertexAttribArray(uniformsLocations.attributes.tangent);
+        gl.vertexAttribPointer(uniformsLocations.attributes.tangent, 4, gl.FLOAT, false, 0, 0);
 
         gl.bindBuffer(gl.ARRAY_BUFFER, this.buffers.uv);
-        gl.enableVertexAttribArray(this.locations.uv);
-        gl.vertexAttribPointer(this.locations.uv, 2, gl.FLOAT, false, 0, 0);
+        gl.enableVertexAttribArray(uniformsLocations.attributes.uv);
+        gl.vertexAttribPointer(uniformsLocations.attributes.uv, 2, gl.FLOAT, false, 0, 0);
 
         gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.buffers.index);
 

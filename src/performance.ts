@@ -1,4 +1,5 @@
 import Stats from 'stats.js';
+import { QuantizationFormat } from './quantize';
 
 interface QueryInfo {
     query: WebGLQuery;
@@ -165,7 +166,7 @@ export class PerformanceMonitor {
         return performance.now() - this.lastDisplayUpdate >= this.displayUpdateInterval;
     }
 
-    updateDisplay(numVertices: number, numTriangles: number, vertexBytes: number, quantized: boolean, version: string) {
+    updateDisplay(numVertices: number, numTriangles: number, vertexBytes: number, quantized: QuantizationFormat, version: string) {
         // Calculate averages for each named measurement
         const averages = Object.entries(this.measurementTimes).map(([name, times]) => {
             const sum = times.reduce((a, b) => a + b, 0);
@@ -173,7 +174,18 @@ export class PerformanceMonitor {
             return `${name}: ${avg.toFixed(2)}ms`;
         });
 
-        const format = quantized ? 'pos(3x16) norm(2x16) tang(1x16) uv(2x16)' : 'pos(3x32) norm(3x32) tang(4x32) uv(2x32)';
+        let format = '';
+        switch (quantized) {
+            case QuantizationFormat.Uncompressed:
+                format = 'pos(3x32) norm(3x32) tang(4x32) uv(2x32)';
+                break;
+            case QuantizationFormat.Angle16Bits:
+                format = 'pos(3x16) norm(2x16) tang(1x16) uv(2x16)';
+                break;
+            case QuantizationFormat.Quaternion12Bits:
+                format = 'pos(3x16) quat(4x12) uv(2x16)';
+                break;
+        }
 
         const memoryUsage = (numVertices * vertexBytes) / 1024 / 1024;
         const memoryUsageIndices = (numTriangles * 3 * 4) / 1024 / 1024;

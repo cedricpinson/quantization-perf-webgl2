@@ -1,5 +1,5 @@
 // Common vertex shader attributes and uniforms
-const commonUniforms = `
+export const commonUniforms = `
 uniform mat4 uModelViewMatrix;
 uniform mat4 uProjectionMatrix;
 uniform mat4 uNormalMatrix;
@@ -49,7 +49,7 @@ vec3 decodePositionQuantized(uvec2 xy, uint z) {
     return mix(uPositionMin, uPositionMax, pos);
 }
 
-vec3 octDecode(vec2 oct) {
+vec3 octDecode16(vec2 oct) {
     vec2 f = vec2(oct) * inv32767 - 1.0;
     vec3 n = vec3(f.x, f.y, 1.0 - abs(f.x) - abs(f.y));
     float t = max(-n.z, 0.0);
@@ -157,7 +157,7 @@ void main() {
     vec3 position = decodePosition(aCompressedData0.xy, aCompressedData1.x);
 
     // Decode normal from octahedral encoding
-    vec3 normal = octDecode(vec2(aCompressedData2.xy));
+    vec3 normal = octDecode16(vec2(aCompressedData2.xy));
 
     // Update tangent decoding
     uint tangentData = aCompressedData1.y;
@@ -201,7 +201,7 @@ void main() {
     vec3 position = decodePosition(aCompressedData0.xy, aCompressedData1.x);
 
     // Decode normal from octahedral encoding
-    vec3 normal = octDecode(vec2(aCompressedData2.xy));
+    vec3 normal = octDecode16(vec2(aCompressedData2.xy));
 
     // Update tangent decoding
     uint tangentData = aCompressedData1.y;

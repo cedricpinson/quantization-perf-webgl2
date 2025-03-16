@@ -106,7 +106,7 @@ export function createBuffer(gl: WebGL2RenderingContext, data: ArrayBuffer, usag
     const totalSize = data.byteLength;
 
     // First allocate the full buffer
-    console.log(`Allocating Vertex Buffer ${totalSize / 1024 / 1024} MB`);
+    console.log(`Allocating Vertex Buffer ${(totalSize / 1024 / 1024).toFixed(2)} MB`);
     gl.bufferData(gl.ARRAY_BUFFER, totalSize, usage);
     gl.bufferSubData(gl.ARRAY_BUFFER, 0, data);
 

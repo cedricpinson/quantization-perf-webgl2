@@ -1,12 +1,13 @@
-import { quantizeMesh } from './quantize';
+import { quantizeStandard16bit, quantizeQuat12bit, QuantizationFormat } from './quantize';
+
 interface SphereData {
     resolution: number;
-    quantize: boolean;
+    quantizationFormat: QuantizationFormat;
 }
 
 self.onmessage = async (e: MessageEvent<SphereData>) => {
     const start = performance.now();
-    const { resolution, quantize } = e.data;
+    const { resolution, quantizationFormat } = e.data;
 
     const numVertices = (resolution + 1) * (resolution + 1);
     const positions = new Float32Array(numVertices * 3);
@@ -77,15 +78,26 @@ self.onmessage = async (e: MessageEvent<SphereData>) => {
 
     const result: any = {
         indices,
-        vertexBytes: quantize ? 16 : 3 * 4 + 3 * 4 + 4 * 4 + 2 * 4,
+        vertexBytes: quantizationFormat === QuantizationFormat.Uncompressed ? 3 * 4 + 3 * 4 + 4 * 4 + 2 * 4 : 16,
         numVertices
     };
 
-    if (quantize) {
-        const { compressedData, positionMin, positionMax } = quantizeMesh(numVertices, positions, normals, tangents, uvs, null, null);
-        result.quantizedData = compressedData;
-        result.positionMin = positionMin;
-        result.positionMax = positionMax;
+    if (quantizationFormat !== QuantizationFormat.Uncompressed) {
+        let meshQuantized;
+        switch (quantizationFormat) {
+            case QuantizationFormat.Quaternion12Bits:
+                meshQuantized = quantizeQuat12bit(numVertices, positions, normals, tangents, uvs, null, null);
+                result.vertexBytes = 16;
+                break;
+            case QuantizationFormat.Angle16Bits:
+            default:
+                meshQuantized = quantizeStandard16bit(numVertices, positions, normals, tangents, uvs, null, null);
+                result.vertexBytes = 16;
+                break;
+        }
+        result.quantizedData = meshQuantized.compressedData;
+        result.positionMin = meshQuantized.positionMin;
+        result.positionMax = meshQuantized.positionMax;
     } else {
         result.positions = positions;
         result.normals = normals;
@@ -93,13 +105,44 @@ self.onmessage = async (e: MessageEvent<SphereData>) => {
         result.uvs = uvs;
     }
 
+    // // Let's test the encoding for a specific vertex (e.g., at lat=45°, lon=30°)
+    // const testLat = Math.PI / 4;  // 45 degrees
+    // const testLon = Math.PI / 6;  // 30 degrees
+
+    // const sinTheta = Math.sin(testLat);
+    // const cosTheta = Math.cos(testLat);
+    // const sinPhi = Math.sin(testLon);
+    // const cosPhi = Math.cos(testLon);
+
+    // // Position/Normal
+    // const testNormal = vec3.fromValues(
+    //     cosPhi * sinTheta,
+    //     cosTheta,
+    //     sinPhi * sinTheta
+    // );
+
+    // // Tangent calculation (same as in the sphere generation)
+    // const tx = -testNormal[2];  // -z
+    // const ty = 0;
+    // const tz = testNormal[0];   // x
+    // const tl = Math.sqrt(tx * tx + ty * ty + tz * tz);
+    // const testTangent = vec3.fromValues(
+    //     tx / tl,
+    //     ty / tl,
+    //     tz / tl
+    // );
+
+    // // Test the encoding with these vectors
+    // console.log('Testing tangent encoding for sphere vertex at lat=45°, lon=30°:');
+    // testTangentEncoding(testNormal, testTangent, 1.0);
+
     const end = performance.now();
     const duration = end - start;
     console.log(`Sphere generation took ${duration.toFixed(2)}ms`);
 
     self.postMessage(result, {
         transfer: [
-            ...(quantize ? [result.quantizedData.buffer] : [positions.buffer, normals.buffer, tangents.buffer, uvs.buffer]),
+            ...(quantizationFormat === QuantizationFormat.Uncompressed ? [positions.buffer, normals.buffer, tangents.buffer, uvs.buffer] : [result.quantizedData.buffer]),
             indices.buffer
         ]
     });

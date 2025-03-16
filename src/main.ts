@@ -1,4 +1,4 @@
-import { mat4 } from 'gl-matrix';
+import { mat4, vec3 } from 'gl-matrix';
 import { Pane } from 'tweakpane';
 import { Mesh, ShapeType } from './mesh';
 import { GpuUncompressedMesh, GpuQuantizedMesh } from './gpu-mesh';
@@ -13,44 +13,49 @@ import {
 } from './webgl';
 import {
     uncompressedVertexShader,
-    quantizedVertexShader,
-    quantizedOptimizedVertexShader,
     fragmentShader
 } from './shaders';
+import {
+    standardAngle16BitVertexShader,
+    quaternion12BitVertexShader,
+    //    compact12BitVertexShader,
+} from './quantizedShaders';
 import { generateMesh } from './mesh';
+import { QuantizationFormat } from './quantize';
+import { testTangentEncoding } from './tangentEncoding';
 
 interface UIParams {
     resolution: number;
     rotationSpeed: number;
-    useQuantizedMesh: boolean;
     shape: ShapeType;
     isPaused: boolean;
     displayMode: 'default' | 'normal' | 'tangent' | 'uv';
     zoom: number;
     version: string;
     noTrig: boolean;
+    quantizationFormat: QuantizationFormat;
 }
 
 function getUrlParams(): Partial<UIParams> {
     const params = new URLSearchParams(window.location.search);
     const resolution = params.get('resolution');
     const shape = params.get('shape') as ShapeType | null;
-    const useQuantizedMesh = params.get('useQuantizedMesh');
     const rotationSpeed = params.get('rotationSpeed');
     const isPaused = params.get('isPaused');
     const displayMode = params.get('displayMode') as 'default' | 'normal' | 'tangent' | 'uv' | null;
     const zoom = params.get('zoom');
     const noTrig = params.get('noTrig');
+    const quantizationFormat = params.get('quantizationFormat') as QuantizationFormat | null;
 
     return {
         resolution: resolution ? Math.min(Math.max(parseInt(resolution), 512), 8192) : undefined,
         shape: shape && ['sphere', 'wavySphere', 'roundedBox'].includes(shape) ? shape : undefined,
-        useQuantizedMesh: useQuantizedMesh ? useQuantizedMesh === 'true' : undefined,
         rotationSpeed: rotationSpeed ? parseFloat(rotationSpeed) : undefined,
         isPaused: isPaused ? isPaused === 'true' : undefined,
         displayMode: displayMode ?? 'default',
         zoom: zoom ? parseFloat(zoom) : undefined,
-        noTrig: noTrig ? noTrig === 'true' : undefined
+        noTrig: noTrig ? noTrig === 'true' : undefined,
+        quantizationFormat: quantizationFormat && Object.values(QuantizationFormat).includes(quantizationFormat) ? quantizationFormat : QuantizationFormat.Uncompressed
     };
 }
 
@@ -71,10 +76,16 @@ interface MeshState {
     gpuQuantizedMesh: GpuQuantizedMesh | null;
     lastResolution: number;
     lastShape: ShapeType | null;
+    lastQuantizationFormat: QuantizationFormat | null;
     isBuildingMesh: boolean;
+    program: WebGLProgram | null;
 }
 
 function main() {
+
+    // Let's test the encoding for a specific vertex (e.g., at lat=45°, lon=30°)
+    testTangentEncoding(vec3.fromValues(0.6124, 0.7071, 0.3536), vec3.fromValues(-0.5000, 0.0000, 0.8660), 1.0);
+
     const canvas = document.querySelector('canvas')!;
 
     const desiredWidth = 800;
@@ -100,13 +111,13 @@ function main() {
     const params: UIParams = {
         resolution: urlParams.resolution ?? 512,
         rotationSpeed: urlParams.rotationSpeed ?? 0.5,
-        useQuantizedMesh: urlParams.useQuantizedMesh ?? false,
         shape: urlParams.shape ?? 'sphere',
         isPaused: urlParams.isPaused ?? false,
         displayMode: urlParams.displayMode ?? 'default',
         zoom: urlParams.zoom ?? 0.1,
         version: 'v2',
         noTrig: urlParams.noTrig ?? true,
+        quantizationFormat: urlParams.quantizationFormat ?? QuantizationFormat.Angle16Bits
     };
 
     // Get the controls container
@@ -160,10 +171,6 @@ function main() {
         label: 'Rotation Speed'
     });
 
-    pane.addBinding(params, 'useQuantizedMesh', {
-        label: 'Use Quantized Mesh'
-    });
-
     pane.addBinding(params, 'noTrig', {
         label: 'No Trig'
     });
@@ -172,32 +179,39 @@ function main() {
         label: 'Pause'
     });
 
+    pane.addBinding(params, 'quantizationFormat', {
+        options: {
+            'None': QuantizationFormat.Uncompressed,
+            'Angle 16-bit': QuantizationFormat.Angle16Bits,
+            'Quaternion 12-bit': QuantizationFormat.Quaternion12Bits
+        },
+        label: 'Quantization Format'
+    });
 
     // Update URL when parameters change
     pane.on('change', () => {
         updateUrlParams(params);
     });
 
-    // Create shaders and programs
-    const uncompressedProgram = createProgram(
-        gl,
-        createShader(gl, gl.VERTEX_SHADER, uncompressedVertexShader),
-        createShader(gl, gl.FRAGMENT_SHADER, fragmentShader)
-    );
 
-    const quantizedProgram = createProgram(
-        gl,
-        createShader(gl, gl.VERTEX_SHADER, quantizedVertexShader),
-        createShader(gl, gl.FRAGMENT_SHADER, fragmentShader)
-    );
-    (quantizedProgram as any)['optimized_version'] = false;
+    const programs = {
+        [QuantizationFormat.Uncompressed]: createProgram(
+            gl,
+            createShader(gl, gl.VERTEX_SHADER, uncompressedVertexShader),
+            createShader(gl, gl.FRAGMENT_SHADER, fragmentShader)
+        ),
+        [QuantizationFormat.Angle16Bits]: createProgram(
+            gl,
+            createShader(gl, gl.VERTEX_SHADER, standardAngle16BitVertexShader),
+            createShader(gl, gl.FRAGMENT_SHADER, fragmentShader)
+        ),
+        [QuantizationFormat.Quaternion12Bits]: createProgram(
+            gl,
+            createShader(gl, gl.VERTEX_SHADER, quaternion12BitVertexShader),
+            createShader(gl, gl.FRAGMENT_SHADER, fragmentShader)
+        )
+    };
 
-    const quantizedOptimizedProgram = createProgram(
-        gl,
-        createShader(gl, gl.VERTEX_SHADER, quantizedOptimizedVertexShader),
-        createShader(gl, gl.FRAGMENT_SHADER, fragmentShader)
-    );
-    (quantizedOptimizedProgram as any)['optimized_version'] = true;
 
     // Create textures
     const size = 256;
@@ -215,13 +229,15 @@ function main() {
         gpuQuantizedMesh: null,
         lastResolution: -1,
         lastShape: null,
-        isBuildingMesh: false
+        lastQuantizationFormat: null,
+        isBuildingMesh: false,
+        program: null
     };
 
     async function buildMesh() {
-        const currentMesh = await generateMesh(params.shape, params.resolution, params.useQuantizedMesh);
-        console.log(`using mesh ${params.useQuantizedMesh ? 'quantized' : 'uncompressed'} ${currentMesh.numVertices} vertices and ${currentMesh.indices.length / 3} triangles`);
-        if (params.useQuantizedMesh) {
+        const currentMesh = await generateMesh(params.shape, params.resolution, params.quantizationFormat);
+        console.log(`using mesh ${params.quantizationFormat !== QuantizationFormat.Uncompressed ? 'quantized' : 'uncompressed'} ${currentMesh.numVertices} vertices and ${currentMesh.indices.length / 3} triangles`);
+        if (params.quantizationFormat !== QuantizationFormat.Uncompressed) {
             const bytes = currentMesh.quantizedData?.byteLength ?? 0;
             console.log(`Vertex Quantized: ${bytes / 1024 / 1024} MB`);
         } else {
@@ -239,11 +255,19 @@ function main() {
 
     function needToBuildMesh(): boolean {
         return !meshState.isBuildingMesh && (
-            (params.useQuantizedMesh && meshState.gpuQuantizedMesh === null) ||
-            (!params.useQuantizedMesh && meshState.gpuUncompressedMesh === null) ||
-            meshState.lastResolution !== params.resolution || meshState.lastShape !== params.shape);
+            (params.quantizationFormat !== QuantizationFormat.Uncompressed && (
+                meshState.gpuQuantizedMesh === null ||
+                meshState.lastResolution !== params.resolution ||
+                meshState.lastShape !== params.shape ||
+                meshState.lastQuantizationFormat !== params.quantizationFormat
+            )) ||
+            (params.quantizationFormat === QuantizationFormat.Uncompressed && (
+                meshState.gpuUncompressedMesh === null ||
+                meshState.lastResolution !== params.resolution ||
+                meshState.lastShape !== params.shape
+            ))
+        );
     }
-
 
     function updateMesh(state: MeshState, currentMesh: Mesh) {
         // Clean up existing GPU meshes
@@ -256,16 +280,16 @@ function main() {
         state.gpuQuantizedMesh = null;
         state.gpuUncompressedMesh = null;
 
-        if (params.useQuantizedMesh) {
+        if (params.quantizationFormat !== QuantizationFormat.Uncompressed) {
             state.gpuQuantizedMesh = new GpuQuantizedMesh(gl, currentMesh);
         } else {
-            state.gpuUncompressedMesh = new GpuUncompressedMesh(gl, uncompressedProgram, currentMesh);
+            state.gpuUncompressedMesh = new GpuUncompressedMesh(gl, currentMesh);
         }
 
         state.lastResolution = params.resolution;
         state.lastShape = params.shape;
+        state.lastQuantizationFormat = params.quantizationFormat;
     }
-
 
     let rotation = 0;
 
@@ -275,9 +299,9 @@ function main() {
         meshState.isBuildingMesh = true;
         const currentMesh = await buildMesh();
         updateMesh(meshState, currentMesh);
+        meshState.program = programs[params.quantizationFormat];
         meshState.isBuildingMesh = false;
     }
-
 
     async function render() {
         if (params.isPaused) {
@@ -322,18 +346,18 @@ function main() {
         mat4.invert(normalMatrix, modelViewMatrix);
         mat4.transpose(normalMatrix, normalMatrix);
 
-
         let useQuantizedMesh = false;
         if (meshState.isBuildingMesh) {
             // during build state use the last available program
             useQuantizedMesh = meshState.gpuQuantizedMesh ? true : false;
         } else {
             // during normal state use the selected program
-            useQuantizedMesh = params.useQuantizedMesh;
+            useQuantizedMesh = params.quantizationFormat !== QuantizationFormat.Uncompressed;
         }
-        const program = useQuantizedMesh ?
-            (params.noTrig ? quantizedOptimizedProgram : quantizedProgram) :
-            uncompressedProgram;
+        const program = meshState.program;
+        if (!program) {
+            throw new Error('Program not found');
+        }
         gl.useProgram(program);
 
         // Set uniforms
@@ -364,7 +388,7 @@ function main() {
         if (useQuantizedMesh) {
             indexCount = meshState.gpuQuantizedMesh?.bind(gl, program) ?? 0;
         } else {
-            indexCount = meshState.gpuUncompressedMesh?.bind(gl) ?? 0;
+            indexCount = meshState.gpuUncompressedMesh?.bind(gl, program) ?? 0;
         }
 
         if (indexCount > 0) {
@@ -376,10 +400,10 @@ function main() {
 
         // Update performance display if needed
         if (performance.shouldUpdateDisplay()) {
-            const numVertices = params.useQuantizedMesh ? meshState.gpuQuantizedMesh?.numVertices ?? 0 : meshState.gpuUncompressedMesh?.numVertices ?? 0;
-            const numIndices = params.useQuantizedMesh ? meshState.gpuQuantizedMesh?.numIndices ?? 0 : meshState.gpuUncompressedMesh?.numIndices ?? 0;
-            const vertexBytes = params.useQuantizedMesh ? meshState.gpuQuantizedMesh?.vertexBytes ?? 0 : meshState.gpuUncompressedMesh?.vertexBytes ?? 0;
-            performance.updateDisplay(numVertices, numIndices / 3, vertexBytes, params.useQuantizedMesh, params.version);
+            const numVertices = params.quantizationFormat !== QuantizationFormat.Uncompressed ? meshState.gpuQuantizedMesh?.numVertices ?? 0 : meshState.gpuUncompressedMesh?.numVertices ?? 0;
+            const numIndices = params.quantizationFormat !== QuantizationFormat.Uncompressed ? meshState.gpuQuantizedMesh?.numIndices ?? 0 : meshState.gpuUncompressedMesh?.numIndices ?? 0;
+            const vertexBytes = params.quantizationFormat !== QuantizationFormat.Uncompressed ? meshState.gpuQuantizedMesh?.vertexBytes ?? 0 : meshState.gpuUncompressedMesh?.vertexBytes ?? 0;
+            performance.updateDisplay(numVertices, numIndices / 3, vertexBytes, params.quantizationFormat, params.version);
         }
 
         requestAnimationFrame(() => render());
