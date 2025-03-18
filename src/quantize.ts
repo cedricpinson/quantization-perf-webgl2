@@ -1,7 +1,5 @@
 import { vec3, vec4, quat, mat4, mat3 } from 'gl-matrix';
-import { encodeTangent } from './tangentEncoding';
-
-const CHAR_BIT = 8;
+import { encodeTangentAsAngle16 } from './tangentEncoding';
 
 export interface QuantizedMesh {
     compressedData: Uint16Array;
@@ -28,9 +26,8 @@ interface QuantizedAttributes {
 // - Normals: 2x16bits (octahedral encoding)
 // - Tangents: 1x16bits (1 bit sign + 15 bits angle)
 // - UVs: 2x16bits (quantized 0-1 range)
-
-// Total: 8x16bits per vertex (16 bytes) vs 48 bytes for uncompressed format
-export function quantizeStandard16bit(numVertices: number, positions: Float32Array, normals: Float32Array, tangents: Float32Array, uvs: Float32Array, min: vec3 | null, max: vec3 | null): QuantizedAttributes {
+// Total: 8x16bits per vertex (16 bytes)
+export function quantizeMeshAngle16Bits(numVertices: number, positions: Float32Array, normals: Float32Array, tangents: Float32Array, uvs: Float32Array, min: vec3 | null, max: vec3 | null): QuantizedAttributes {
     const compressedData = new Uint16Array(numVertices * 8); // 4 vec2 per vertex or 8x16bits
 
     const positionMin = vec3.fromValues(Infinity, Infinity, Infinity);
@@ -73,7 +70,7 @@ export function quantizeStandard16bit(numVertices: number, positions: Float32Arr
         const tangent = vec3.fromValues(tangents[tanIdx], tangents[tanIdx + 1], tangents[tanIdx + 2]);
         const tangentSign = tangents[tanIdx + 3] > 0 ? 1 : 0;
 
-        const encodedTangent = encodeTangent(normal, tangent, tangentSign);
+        const encodedTangent = encodeTangentAsAngle16(normal, tangent, tangentSign);
         //const decodedTangent = decodeTangent(encodedTangent, normal);
 
         compressedData[outIdx + 3] = encodedTangent;
@@ -109,8 +106,11 @@ export function quantizeStandard16bit(numVertices: number, positions: Float32Arr
     };
 }
 
-// Total: 8x16bits per vertex (16 bytes) vs 48 bytes for uncompressed format
-export function quantizeQuat12bit(numVertices: number, positions: Float32Array, normals: Float32Array, tangents: Float32Array, uvs: Float32Array, min: vec3 | null, max: vec3 | null): QuantizedAttributes {
+// - Positions: 3x16bits (quantized on mesh bounding box)
+// - qTangents: 3x16bits (12-bit quaternion for normal+tangent frame)
+// - UVs: 2x16bits (quantized 0-1 range)
+// Total: 8x16bits per vertex (16 bytes)
+export function quantizeMeshQuaternion12Bits(numVertices: number, positions: Float32Array, normals: Float32Array, tangents: Float32Array, uvs: Float32Array, min: vec3 | null, max: vec3 | null): QuantizedAttributes {
     const compressedData = new Uint16Array(numVertices * 8); // 4 vec2 per vertex or 8x16bits
 
     const positionMin = vec3.fromValues(Infinity, Infinity, Infinity);
@@ -129,8 +129,9 @@ export function quantizeQuat12bit(numVertices: number, positions: Float32Array, 
         vec3.copy(positionMin, min);
         vec3.copy(positionMax, max);
     }
-    // Quantize positions to 16 bits
     const range = vec3.sub(vec3.create(), positionMax, positionMin);
+    const qTangent12 = new Uint16Array(numVertices * 3);
+    const vec4Tmp = vec4.create();
     for (let i = 0; i < numVertices; i++) {
         const posIdx = i * 3;
         const tanIdx = i * 4;
@@ -153,19 +154,12 @@ export function quantizeQuat12bit(numVertices: number, positions: Float32Array, 
         const tangent = vec3.fromValues(tangents[tanIdx], tangents[tanIdx + 1], tangents[tanIdx + 2]);
         const tangentSign = tangents[tanIdx + 3] > 0 ? 1 : 0;
 
-        const q = packTangentFrame(quat.create(), normal, vec4.fromValues(tangent[0], tangent[1], tangent[2], tangentSign), TempVars);
-        // Pack quaternion into 12 bits
-        const packedQ = [
-            Math.round((q[0] * 0.5 + 0.5) * 4095),
-            Math.round((q[1] * 0.5 + 0.5) * 4095),
-            Math.round((q[2] * 0.5 + 0.5) * 4095),
-            Math.round((q[3] * 0.5 + 0.5) * 4095)
-        ];
+        vec4.set(vec4Tmp, tangent[0], tangent[1], tangent[2], tangentSign);
+        encodeQuaternion12Bits(qTangent12, normal, vec4Tmp, TempVars);
 
-        const [first, second, third] = pack12bitQuaternion(packedQ[0], packedQ[1], packedQ[2], packedQ[3]);
-        compressedData[outIdx + 3] = first;
-        compressedData[outIdx + 4] = second;
-        compressedData[outIdx + 5] = third;
+        compressedData[outIdx + 3] = qTangent12[0];
+        compressedData[outIdx + 4] = qTangent12[1];
+        compressedData[outIdx + 5] = qTangent12[2];
 
         // Quantize UVs to 16 bits
         compressedData[outIdx + 6] = (uvs[uvIdx] * 65535) | 0;
@@ -179,54 +173,8 @@ export function quantizeQuat12bit(numVertices: number, positions: Float32Array, 
     };
 }
 
-// Helper functions for octahedral encoding
-// function octEncode(normal: vec3): [number, number] {
-//     const l1norm = Math.abs(normal[0]) + Math.abs(normal[1]) + Math.abs(normal[2]);
-//     const x = normal[0] / l1norm;
-//     const y = normal[1] / l1norm;
-
-//     if (normal[2] <= 0) {
-//         const tempX = (1 - Math.abs(y)) * (x >= 0 ? 1 : -1);
-//         const tempY = (1 - Math.abs(x)) * (y >= 0 ? 1 : -1);
-//         return [tempX, tempY];
-//     }
-//     return [x, y];
-// }
-
-// Pack a float in [0,1] to n bits
-// function packSignedFloat(value: number, bits: number): number {
-//     const maxValue = (1 << bits) - 1;
-//     return Math.round((value * 0.5 + 0.5) * maxValue);
-// }
-
-// function packUnsignedFloat(value: number, bits: number): number {
-//     const maxValue = (1 << bits) - 1;
-//     return Math.round((value) * maxValue);
-// }
-
-// // Unpack from n bits to float in [0,1]
-// function unpackUnsignedFloat(value: number, bits: number): number {
-//     const maxValue = (1 << bits) - 1;
-//     return value / maxValue;
-// }
-
-function unpackSignedFloat(value: number, bits: number): number {
-    const maxValue = (1 << bits) - 1;
-    return (value / maxValue) * 2.0 - 1.0;
-}
-
-// Pack four 12-bit values into three 16-bit values with overlap
-function pack12bitQuaternion(a: number, b: number, c: number, d: number): [number, number, number] {
-    // First 16 bits: all of a (12 bits) and first 4 bits of b
-    const first = (a & 0xFFF) | ((b & 0xF) << 12);
-    // Second 16 bits: last 8 bits of b and first 8 bits of c
-    const second = ((b >> 4) & 0xFF) | ((c & 0xFF) << 8);
-    // Third 16 bits: last 4 bits of c and all of d (12 bits)
-    const third = ((c >> 8) & 0xF) | ((d & 0xFFF) << 4);
-    return [first, second, third];
-}
-
-function store4x12to3x16(out: number[], a: number, b: number, c: number, d: number) {
+// Store 4 values of 12 bits each into 3 16-bit values
+function store4x12To3x16(out: Uint16Array, a: number, b: number, c: number, d: number): Uint16Array {
     // First 16 bits: all of a (12 bits) and first 4 bits of b
     const first = (a & 0xFFF) | ((b & 0xF) << 12);
     // Second 16 bits: last 8 bits of b and first 8 bits of c
@@ -239,7 +187,8 @@ function store4x12to3x16(out: number[], a: number, b: number, c: number, d: numb
     return out;
 }
 
-function unpack3x16To4x12(out: vec4, a: number, b: number, c: number): vec4 {
+// Extract 4 12-bit values from 3 16-bit values
+function load4x12From3x16(out: vec4, a: number, b: number, c: number): vec4 {
     // Extract first 12-bit value (all from first 12 bits of a)
     out[0] = a & 0xFFF;
 
@@ -255,28 +204,57 @@ function unpack3x16To4x12(out: vec4, a: number, b: number, c: number): vec4 {
     return out;
 }
 
-
-export function pack12bitQuaternionToUint16(out: number[], a: number, b: number, c: number, d: number): number[] {
-    // Pack quaternion into 12 bits
-    const q0 = Math.round((a * 0.5 + 0.5) * 4095);
-    const q1 = Math.round((b * 0.5 + 0.5) * 4095);
-    const q2 = Math.round((c * 0.5 + 0.5) * 4095);
-    const q3 = Math.round((d * 0.5 + 0.5) * 4095);
-
-    return store4x12to3x16(out, q0, q1, q2, q3);
-}
-
-export function unpack12bitQuaternion(out: quat, a: number, b: number, c: number): quat {
-    const q = vec4.create();
-    unpack3x16To4x12(q, a, b, c);
-    q[0] = unpackSignedFloat(q[0], 12);
-    q[1] = unpackSignedFloat(q[1], 12);
-    q[2] = unpackSignedFloat(q[2], 12);
-    q[3] = unpackSignedFloat(q[3], 12);
-    quat.normalize(out, q);
+// Store 4 values of 8 bits each into 2 16-bit values
+function store4x8To2x16(out: Uint16Array, a: number, b: number, c: number, d: number): Uint16Array {
+    const first = (a & 0xFF) | ((b & 0xFF) << 8);
+    const second = (c & 0xFF) | ((d & 0xFF) << 8);
+    out[0] = first;
+    out[1] = second;
     return out;
 }
 
+// Extract 4 8-bit values from 2 16-bit values
+function load4x8From2x16(out: vec4, a: number, b: number): vec4 {
+    out[0] = (a & 0xFF);
+    out[1] = (a >> 8) & 0xFF;
+    out[2] = (b & 0xFF);
+    out[3] = (b >> 8) & 0xFF;
+    return out;
+}
+
+// Convert float in [-1,1] to integer with n bits
+function quantizeSignedFloat(value: number, bits: number): number {
+    const maxValue = (1 << bits) - 1;
+    return Math.round((value * 0.5 + 0.5) * maxValue);
+}
+
+// Convert n-bit integer back to float in [-1,1]
+function unquantizeSignedFloat(value: number, bits: number): number {
+    const maxValue = (1 << bits) - 1;
+    return (value / maxValue) * 2.0 - 1.0;
+}
+
+// Quantize a quaternion to 12 bits per component and store in 3 16-bit values
+function packQuaternion12BitsTo16Bits(out: Uint16Array, a: number, b: number, c: number, d: number): Uint16Array {
+    // Quantize quaternion components to 12 bits
+    const q0 = quantizeSignedFloat(a, 12);
+    const q1 = quantizeSignedFloat(b, 12);
+    const q2 = quantizeSignedFloat(c, 12);
+    const q3 = quantizeSignedFloat(d, 12);
+
+    return store4x12To3x16(out, q0, q1, q2, q3);
+}
+
+function unpackQuaternion12Bits(out: quat, a: number, b: number, c: number): quat {
+    const q = out;
+    load4x12From3x16(q, a, b, c);
+    q[0] = unquantizeSignedFloat(q[0], 12);
+    q[1] = unquantizeSignedFloat(q[1], 12);
+    q[2] = unquantizeSignedFloat(q[2], 12);
+    q[3] = unquantizeSignedFloat(q[3], 12);
+    quat.normalize(out, q);
+    return out;
+}
 
 function toMat3(out: mat3, c00: number, c01: number, c02: number, c10: number, c11: number, c12: number, c20: number, c21: number, c22: number) {
     out[0] = c00;
@@ -291,15 +269,15 @@ function toMat3(out: mat3, c00: number, c01: number, c02: number, c10: number, c
     return out;
 }
 
-function toNormal(out: vec3, q: quat) {
+function toNormal(out: vec3, q: quat, temps: TempVars) {
     // Create local vectors instead of using global ones
-    const F0 = vec3.fromValues(0.0, 0.0, 1.0);
-    const F1 = vec3.fromValues(2.0, -2.0, -2.0);
-    const F2 = vec3.fromValues(2.0, 2.0, -2.0);
+    const F0 = temps.F0;
+    const F1 = temps.F1;
+    const F2 = temps.F2;
 
-    const n1 = vec3.create();
-    const n2 = vec3.create();
-    const tmp = vec3.create();
+    const n1 = temps.TMP1;
+    const n2 = temps.TMP2;
+    const tmp = temps.TMP0;
 
     // n1 = F1 * q[0] * [q[2], q[3], q[0]]
     vec3.scale(n1, F1, q[0]);
@@ -314,13 +292,6 @@ function toNormal(out: vec3, q: quat) {
     vec3.add(out, out, n2);
 }
 
-// Helper function to ensure quaternion w component is positive
-function positive(q: quat): quat {
-    if (q[3] < 0) {
-        return quat.scale(q, q, -1);
-    }
-    return q;
-}
 
 // Create a class to manage temporary variables
 interface TempVars {
@@ -334,6 +305,8 @@ interface TempVars {
     Q0: vec3;
     Q1: vec3;
     Q2: vec3;
+    qTangent: quat;
+    qTangent12: Uint16Array;
 }
 
 export const TempVars: TempVars = {
@@ -347,29 +320,37 @@ export const TempVars: TempVars = {
     Q0: vec3.fromValues(1, 0, 0),
     Q1: vec3.fromValues(-2, 2, -2),
     Q2: vec3.fromValues(-2, 2, 2),
+    qTangent: quat.create(),
+    qTangent12: new Uint16Array(3),
 };
 
-// Update the packTangentFrameFilament function to use the temp vars
-
-export function packTangentFrame(q: quat, n: vec3, t: vec4, temps: TempVars): quat {
+// encode norma and tangent into a qTangent frame
+// numStorageBits is needed to asdjust the bias, but the encoding of the number of bits is not done here
+function encodeQTangent(out: quat, n: vec3, t: vec4, temps: TempVars, numStorageBits: number): quat {
     // @ts-ignore
     const c = vec3.cross(temps.TMP0, n, t);
     // @ts-ignore
     const mat = toMat3(temps.MAT0, t[0], t[1], t[2], c[0], c[1], c[2], n[0], n[1], n[2]);
-    q = quat.fromMat3(q, mat);
-    q = quat.normalize(q, q);
-    q = positive(q);
+    quat.fromMat3(out, mat);
+    quat.normalize(out, out);
 
-    const storageSize = 2; //sizeof(int16_t)
+    // positive
+    if (out[3] < 0) {
+        quat.scale(out, out, -1);
+    }
+
     // Ensure w is never 0.0
     // Bias is 2^(nb_bits - 1) - 1
-    const bias = 1 / ((1 << (storageSize * CHAR_BIT - 1)) - 1);
-    if (q[3] < bias) {
-        q[3] = bias;
+    // const storageSize = 2; //sizeof(int16_t)
+    // const CHAR_BIT = 8;
+    // const bias = 1 / ((1 << (storageSize * CHAR_BIT - 1)) - 1);
+    const bias = 1 / ((1 << (numStorageBits - 1)) - 1);
+    if (out[3] < bias) {
+        out[3] = bias;
         const factor = Math.sqrt(1.0 - bias * bias);
-        q[0] *= factor;
-        q[1] *= factor;
-        q[2] *= factor;
+        out[0] *= factor;
+        out[1] *= factor;
+        out[2] *= factor;
     }
 
     // @ts-ignore
@@ -379,17 +360,74 @@ export function packTangentFrame(q: quat, n: vec3, t: vec4, temps: TempVars): qu
     // @ts-ignore
     const cc = vec3.cross(temps.TMP2, t, n);
     if (vec3.dot(cc, b) < 0) {
-        quat.scale(q, q, -1);
+        quat.scale(out, out, -1);
     }
-    return q;
+    return out;
+}
+
+// encode normal and tangent into 12-bit quaternion packed into 3x16bits
+export function encodeQuaternion12Bits(out: Uint16Array, n: vec3, t: vec4, temps: TempVars): Uint16Array {
+    const q = encodeQTangent(temps.qTangent, n, t, temps, 12);
+    return packQuaternion12BitsTo16Bits(out, q[0], q[1], q[2], q[3]);
+}
+
+export function decodeQuaternion12Bits(q12: Uint16Array, temps: TempVars): { normal: vec3, tangent: vec4 } {
+    const q = unpackQuaternion12Bits(quat.create(), q12[0], q12[1], q12[2]);
+    return decodeQTangent(q, temps);
+}
+
+// encode normal and tangent into 16-bit quaternion packed into 4x16bits
+export function encodeQuaternion16Bits(out: Uint16Array, n: vec3, t: vec4, temps: TempVars): Uint16Array {
+    const q = encodeQTangent(temps.qTangent, n, t, temps, 16);
+    // Quantize quaternion components to 16 bits
+    out[0] = quantizeSignedFloat(q[0], 16);
+    out[1] = quantizeSignedFloat(q[1], 16);
+    out[2] = quantizeSignedFloat(q[2], 16);
+    out[3] = quantizeSignedFloat(q[3], 16);
+    return out;
+}
+
+export function decodeQuaternion16Bits(q: Uint16Array, temps: TempVars): { normal: vec3, tangent: vec4 } {
+    const qQuat = quat.fromValues(
+        unquantizeSignedFloat(q[0], 16),
+        unquantizeSignedFloat(q[1], 16),
+        unquantizeSignedFloat(q[2], 16),
+        unquantizeSignedFloat(q[3], 16));
+    quat.normalize(qQuat, qQuat);
+    return decodeQTangent(qQuat, temps);
+}
+
+// encode normal and tangent into 8-bit quaternion packed into 2x16bits
+export function encodeQuaternion8Bits(out: Uint16Array, n: vec3, t: vec4, temps: TempVars): Uint16Array {
+    const q = encodeQTangent(temps.qTangent, n, t, temps, 8);
+    // Quantize quaternion components to 8 bits
+    const q0 = quantizeSignedFloat(q[0], 8);
+    const q1 = quantizeSignedFloat(q[1], 8);
+    const q2 = quantizeSignedFloat(q[2], 8);
+    const q3 = quantizeSignedFloat(q[3], 8);
+    return store4x8To2x16(out, q0, q1, q2, q3);
+}
+
+export function decodeQuaternion8Bits(q: Uint16Array, temps: TempVars): { normal: vec3, tangent: vec4 } {
+    let qQuat = quat.create();
+    load4x8From2x16(qQuat, q[0], q[1]);
+    qQuat = quat.fromValues(
+        unquantizeSignedFloat(qQuat[0], 8),
+        unquantizeSignedFloat(qQuat[1], 8),
+        unquantizeSignedFloat(qQuat[2], 8),
+        unquantizeSignedFloat(qQuat[3], 8));
+    quat.normalize(qQuat, qQuat);
+    return decodeQTangent(qQuat, temps);
 }
 
 /**
  * Extracts the normal and tangent vectors of the tangent frame encoded in the
  * specified quaternion.
  */
-export function unpackNormalTangent(q: quat, n: vec3, t: vec3, temps: TempVars) {
-    toNormal(n, q);
+function decodeQTangent(q: quat, temps: TempVars): { normal: vec3, tangent: vec4 } {
+    const n = vec3.create();
+    const t = vec4.create();
+    toNormal(n, q, temps);
 
     const t0 = temps.Q0;
     const t1 = vec3.scale(temps.TMP0, temps.Q1, q[1]);
@@ -397,6 +435,10 @@ export function unpackNormalTangent(q: quat, n: vec3, t: vec3, temps: TempVars) 
     const t2 = vec3.scale(temps.TMP2, temps.Q2, q[2]);
     vec3.multiply(t2, t2, vec3.set(temps.TMP1, q[2], q[3], q[0]));
 
+    // @ts-ignore
     vec3.add(t, t0, t1);
+    // @ts-ignore
     vec3.add(t, t, t2);
+    t[3] = q[3] > 0 ? 1 : -1;
+    return { normal: n, tangent: t };
 }

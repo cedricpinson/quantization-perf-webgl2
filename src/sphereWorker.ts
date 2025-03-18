@@ -1,4 +1,4 @@
-import { quantizeStandard16bit, quantizeQuat12bit, QuantizationFormat } from './quantize';
+import { quantizeMeshAngle16Bits, quantizeMeshQuaternion12Bits, QuantizationFormat } from './quantize';
 
 interface SphereData {
     resolution: number;
@@ -86,12 +86,12 @@ self.onmessage = async (e: MessageEvent<SphereData>) => {
         let meshQuantized;
         switch (quantizationFormat) {
             case QuantizationFormat.Quaternion12Bits:
-                meshQuantized = quantizeQuat12bit(numVertices, positions, normals, tangents, uvs, null, null);
+                meshQuantized = quantizeMeshQuaternion12Bits(numVertices, positions, normals, tangents, uvs, null, null);
                 result.vertexBytes = 16;
                 break;
             case QuantizationFormat.Angle16Bits:
             default:
-                meshQuantized = quantizeStandard16bit(numVertices, positions, normals, tangents, uvs, null, null);
+                meshQuantized = quantizeMeshAngle16Bits(numVertices, positions, normals, tangents, uvs, null, null);
                 result.vertexBytes = 16;
                 break;
         }

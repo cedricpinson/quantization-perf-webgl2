@@ -27,7 +27,7 @@ const float inv4095 = 1.0 / 4095.0;
 // quantization functions
 const quantizeFunctions = `
 
-vec3 decodePosition(uvec2 xy, uint z) {
+vec3 decodePosition16(uvec2 xy, uint z) {
     vec3 pos;
     pos.x = float(xy.x) * inv65535;
     pos.y = float(xy.y) * inv65535;
@@ -72,14 +72,6 @@ void unpack12bitOverlap(uint first, uint second, uint third, out vec2 normal, ou
     tangent.y = float(tangentY) * inv4095 * 2.0 - 1.0;
 }
 
-vec3 octDecode(vec2 oct) {
-    vec3 n = vec3(oct.x, oct.y, 1.0 - abs(oct.x) - abs(oct.y));
-    float t = max(-n.z, 0.0);
-    n.x += n.x >= 0.0 ? -t : t;
-    n.y += n.y >= 0.0 ? -t : t;
-    return normalize(n);
-}
-
 vec3 octDecode16(vec2 oct) {
     vec2 f = vec2(oct) * inv32767 - 1.0;
     vec3 n = vec3(f.x, f.y, 1.0 - abs(f.x) - abs(f.y));
@@ -89,15 +81,15 @@ vec3 octDecode16(vec2 oct) {
     return normalize(n);
 }
 
-vec3 octDecodeTangent(vec2 oct, vec3 normal) {
-    vec3 tangent = octDecode(oct);
-    // Make tangent orthogonal to normal
-    tangent = normalize(tangent - normal * dot(normal, tangent));
-    return tangent;
-}
 
+// vec3 diamonDecodeTangent16(vec2 oct, vec3 normal) {
+//     vec3 tangent = octDecode(oct);
+//     // Make tangent orthogonal to normal
+//     tangent = normalize(tangent - normal * dot(normal, tangent));
+//     return tangent;
+// }
 
-vec3 decodeTangentTrig(uint encoded, vec3 normal) {
+vec3 decodeAngleTangent16(uint encoded, vec3 normal) {
     // Extract sign and angle
     float quantizedAngle = float(encoded & 0x7FFFu);
 
@@ -111,63 +103,15 @@ vec3 decodeTangentTrig(uint encoded, vec3 normal) {
     vec3 bitangent = normalize(cross(normal, tempVec));
 
     // Rotate bitangent around normal using the same rotation formula
+    // float cosAngle = fastCos(angle);
+    // float sinAngle = fastSin(angle);
     float cosAngle = cos(angle);
     float sinAngle = sin(angle);
     vec3 rotatedBitangent = cross(normal, bitangent);
     return normalize(bitangent * cosAngle + rotatedBitangent * sinAngle);
 }
 
-/**
- * Fast polynomial approximation for sine
- * Max error < 0.001 for range [-π, π]
- */
-float fastSin(float x) {
-    // Wrap x to [-π, π]
-    x = mod(x, TWO_PI);
-    if (x > PI) x -= TWO_PI;
-    else if (x < -PI) x += TWO_PI;
-
-    // Coefficients for polynomial approximation
-    float a3 = -0.16666667;  // -1/6
-    float a5 = 0.008333333;  // 1/120
-    float a7 = -0.000198413; // -1/5040
-
-    float x2 = x * x;
-    float x3 = x2 * x;
-
-    return x + a3 * x3 + a5 * x3 * x2 + a7 * x3 * x2 * x2;
-}
-
-/**
- * Fast polynomial approximation for cosine using sin(x + π/2)
- * Max error < 0.001 for range [-π, π]
- */
-float fastCos(float x) {
-    return fastSin(x + HALF_PI);
-}
-
-vec3 decodeTangentNoTrig(uint encoded, vec3 normal) {
-    // Extract sign and angle
-    float quantizedAngle = float(encoded & 0x7FFFu);
-
-    // Convert back to radians
-    float angle = quantizedAngle * inv32767 * TWO_PI - PI;
-
-    // Calculate initial bitangent using same approach as TS code
-    vec3 tempVec = abs(normal.x) < 0.9 ?
-        vec3(1.0, 0.0, 0.0) :
-        vec3(0.0, 1.0, 0.0);
-    vec3 bitangent = normalize(cross(normal, tempVec));
-
-    // Rotate bitangent around normal using the same rotation formula
-    float cosAngle = fastCos(angle);
-    float sinAngle = fastSin(angle);
-    vec3 rotatedBitangent = cross(normal, bitangent);
-    return normalize(bitangent * cosAngle + rotatedBitangent * sinAngle);
-}
-
 // Quaternion 12-bit format with overlapping values
-
 void unpack12bitQuaternion(uint a, uint b, uint c, out vec4 quaternion) {
     // Extract quaternion components from overlapped storage
     uint q0 = a & 0xFFFu;
@@ -187,40 +131,6 @@ void unpack12bitQuaternion(uint a, uint b, uint c, out vec4 quaternion) {
     );
     quaternion = normalize(quaternion);
 }
-
-void decodeTangentFrame(vec4 q, out vec3 normal, out vec3 tangent, out float tangentSign) {
-    float qxx = q.x * q.x;
-    float qyy = q.y * q.y;
-    float qzz = q.z * q.z;
-    float qxz = q.x * q.z;
-    float qxy = q.x * q.y;
-    float qyz = q.y * q.z;
-    float qwx = q.w * q.x;
-    float qwy = q.w * q.y;
-    float qwz = q.w * q.z;
-
-    // Extract normal
-    normal = vec3(
-        1.0 - 2.0 * (qyy + qzz),
-        2.0 * (qxy + qwz),
-        2.0 * (qxz - qwy)
-    );
-
-    // Extract tangent
-    tangent = vec3(
-        2.0 * (qxy - qwz),
-        1.0 - 2.0 * (qxx + qzz),
-        2.0 * (qyz + qwx)
-    );
-
-    // Extract bitangent sign
-    vec3 bitangent = cross(normal, tangent);
-    tangentSign = dot(bitangent, vec3(
-        2.0 * (qxz + qwy),
-        2.0 * (qyz - qwx),
-        1.0 - 2.0 * (qxx + qyy)
-    )) > 0.0 ? 1.0 : -1.0;
-}
 `;
 
 // Shader variants for each format
@@ -233,10 +143,8 @@ ${commonOutputs}
 ${commonConstants}
 ${quantizeFunctions}
 
-#define decodeTangent decodeTangentTrig
-
 void main() {
-    vec3 position = decodePosition(aCompressedData0.xy, aCompressedData1.x);
+    vec3 position = decodePosition16(aCompressedData0.xy, aCompressedData1.x);
 
     // Decode normal and tangent from overlapped storage
     vec2 octNormal;
@@ -245,7 +153,7 @@ void main() {
 
     // Update tangent decoding
     uint tangentData = aCompressedData1.y;
-    vec3 tangent = decodeTangent(tangentData, normal);
+    vec3 tangent = decodeAngleTangent16(tangentData, normal);
     float tangentSign = float((tangentData >> 15u) & 1u) * 2.0 - 1.0;
 
     vec2 uv = vec2(aCompressedData3.xy) * inv65535;
@@ -273,7 +181,7 @@ ${commonConstants}
 ${quantizeFunctions}
 
 void main() {
-    vec3 position = decodePosition(aCompressedData0.xy, aCompressedData1.x);
+    vec3 position = decodePosition16(aCompressedData0.xy, aCompressedData1.x);
 
     // Decode normal and tangent from overlapped storage
     vec2 octNormal, octTangent;
@@ -303,7 +211,7 @@ ${commonConstants}
 ${quantizeFunctions}
 
 void main() {
-    vec3 position = decodePosition(aCompressedData0.xy, aCompressedData1.x);
+    vec3 position = decodePosition16(aCompressedData0.xy, aCompressedData1.x);
 
     // Decode quaternion from overlapped storage
     vec4 quaternion;
@@ -313,7 +221,7 @@ void main() {
     vec3 normal, tangent;
     // https://github.com/fuzhenn/tbn-packer?tab=readme-ov-file
     toTangentFrame(quaternion, normal, tangent);
-    float tangentSign = 1.0;
+    float tangentSign = sign(quaternion.w);
 
     vec2 uv = vec2(aCompressedData3.xy) * inv65535;
 

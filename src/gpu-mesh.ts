@@ -15,19 +15,42 @@ interface QuantizedBuffers {
     index: WebGLBuffer;
 }
 
+interface ProgramInfos {
+    attributes: { [key: string]: number };
+    uniforms: { [key: string]: WebGLUniformLocation };
+}
+
+
+function getUniformsLocations(gl: WebGL2RenderingContext, program: WebGLProgram, uniforms: string[]): { [key: string]: WebGLUniformLocation } {
+    const uniformsLocations: { [key: string]: WebGLUniformLocation } = {};
+    for (const uniform of uniforms) {
+        const loc = gl.getUniformLocation(program, uniform);
+        if (!loc) {
+            throw new Error(`Uniform ${uniform} not found`);
+        }
+        uniformsLocations[uniform] = loc;
+    }
+    return uniformsLocations;
+}
+
+function getAttributesLocations(gl: WebGL2RenderingContext, program: WebGLProgram, attributes: string[]): { [key: string]: number } {
+    const attributesLocations: { [key: string]: number } = {};
+    for (const attribute of attributes) {
+        const loc = gl.getAttribLocation(program, attribute);
+        if (loc !== -1) {
+            attributesLocations[attribute] = loc;
+        }
+    }
+    return attributesLocations;
+}
+
 export class GpuUncompressedMesh {
     private buffers: UncompressedBuffers;
-    uniformsLocations: Map<WebGLProgram, {
-        attributes: {
-            position: number;
-            normal: number;
-            tangent: number;
-            uv: number;
-        };
-    }>;
+    uniformsLocations: Map<WebGLProgram, ProgramInfos>;
     numIndices: number;
     numVertices: number;
     vertexBytes: number;
+    result: { numIndices: number, uniformsLocations: { [key: string]: WebGLUniformLocation } };
 
     constructor(
         gl: WebGL2RenderingContext,
@@ -41,15 +64,8 @@ export class GpuUncompressedMesh {
         this.vertexBytes = mesh.vertexBytes;
         this.numIndices = mesh.indices.length;
 
-        this.uniformsLocations = new Map<WebGLProgram, {
-            attributes: {
-                position: number;
-                normal: number;
-                tangent: number;
-                uv: number;
-            };
-        }>();
-
+        this.uniformsLocations = new Map<WebGLProgram, ProgramInfos>();
+        this.result = { numIndices: 0, uniformsLocations: {} };
         // Create buffers
         const positionBuffer = createBuffer(gl, mesh.positions, gl.STATIC_DRAW);
         const normalBuffer = createBuffer(gl, mesh.normals, gl.STATIC_DRAW);
@@ -67,53 +83,46 @@ export class GpuUncompressedMesh {
         };
     }
 
-    computeUniformsLocations(gl: WebGL2RenderingContext, program: WebGLProgram): {
-        attributes: {
-            position: number;
-            normal: number;
-            tangent: number;
-            uv: number;
-        }
-    } {
+    computeUniformsLocations(gl: WebGL2RenderingContext, program: WebGLProgram, commonUniformsNames: string[]): ProgramInfos {
         const locations = {
-            attributes: {
-                position: gl.getAttribLocation(program, 'aPosition'),
-                normal: gl.getAttribLocation(program, 'aNormal'),
-                tangent: gl.getAttribLocation(program, 'aTangent'),
-                uv: gl.getAttribLocation(program, 'aUV')
-            }
+            attributes: getAttributesLocations(gl, program, ['aPosition', 'aNormal', 'aTangent', 'aUV']),
+            uniforms: getUniformsLocations(gl, program, commonUniformsNames)
         };
 
         return locations;
     }
 
-    bind(gl: WebGL2RenderingContext, program: WebGLProgram): number {
+    bind(gl: WebGL2RenderingContext, program: WebGLProgram, commonUniformsNames: string[]): { numIndices: number, uniformsLocations: { [key: string]: WebGLUniformLocation } } {
         // Use stored locations
         let uniformsLocations = this.uniformsLocations.get(program);
         if (!uniformsLocations) {
-            uniformsLocations = this.computeUniformsLocations(gl, program);
+            uniformsLocations = this.computeUniformsLocations(gl, program, commonUniformsNames);
+            this.uniformsLocations.set(program, uniformsLocations);
         }
 
         // Set up vertex attributes
         gl.bindBuffer(gl.ARRAY_BUFFER, this.buffers.position);
-        gl.enableVertexAttribArray(uniformsLocations.attributes.position);
-        gl.vertexAttribPointer(uniformsLocations.attributes.position, 3, gl.FLOAT, false, 0, 0);
+        gl.enableVertexAttribArray(uniformsLocations.attributes['aPosition']);
+        gl.vertexAttribPointer(uniformsLocations.attributes['aPosition'], 3, gl.FLOAT, false, 0, 0);
 
         gl.bindBuffer(gl.ARRAY_BUFFER, this.buffers.normal);
-        gl.enableVertexAttribArray(uniformsLocations.attributes.normal);
-        gl.vertexAttribPointer(uniformsLocations.attributes.normal, 3, gl.FLOAT, false, 0, 0);
+        gl.enableVertexAttribArray(uniformsLocations.attributes['aNormal']);
+        gl.vertexAttribPointer(uniformsLocations.attributes['aNormal'], 3, gl.FLOAT, false, 0, 0);
 
         gl.bindBuffer(gl.ARRAY_BUFFER, this.buffers.tangent);
-        gl.enableVertexAttribArray(uniformsLocations.attributes.tangent);
-        gl.vertexAttribPointer(uniformsLocations.attributes.tangent, 4, gl.FLOAT, false, 0, 0);
+        gl.enableVertexAttribArray(uniformsLocations.attributes['aTangent']);
+        gl.vertexAttribPointer(uniformsLocations.attributes['aTangent'], 4, gl.FLOAT, false, 0, 0);
 
         gl.bindBuffer(gl.ARRAY_BUFFER, this.buffers.uv);
-        gl.enableVertexAttribArray(uniformsLocations.attributes.uv);
-        gl.vertexAttribPointer(uniformsLocations.attributes.uv, 2, gl.FLOAT, false, 0, 0);
+        gl.enableVertexAttribArray(uniformsLocations.attributes['aUV']);
+        gl.vertexAttribPointer(uniformsLocations.attributes['aUV'], 2, gl.FLOAT, false, 0, 0);
 
         gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.buffers.index);
 
-        return this.numIndices;
+        this.result.numIndices = this.numIndices;
+        this.result.uniformsLocations = uniformsLocations.uniforms;
+
+        return this.result;
     }
 
     cleanup(gl: WebGL2RenderingContext): void {
@@ -133,11 +142,8 @@ export class GpuQuantizedMesh {
     private positionMax: vec3;
     numVertices: number;
     vertexBytes: number;
-    uniformsLocations: Map<WebGLProgram, {
-        positionMin: WebGLUniformLocation | null;
-        positionMax: WebGLUniformLocation | null;
-        compressedData: number[];
-    }>;
+    uniformsLocations: Map<WebGLProgram, ProgramInfos>;
+    result: { numIndices: number, uniformsLocations: { [key: string]: WebGLUniformLocation } };
 
     constructor(
         gl: WebGL2RenderingContext,
@@ -160,60 +166,52 @@ export class GpuQuantizedMesh {
             index: indexBuffer
         };
 
-        this.uniformsLocations = new Map<WebGLProgram, {
-            positionMin: WebGLUniformLocation | null;
-            positionMax: WebGLUniformLocation | null;
-            compressedData: number[];
-        }>();
+        this.result = { numIndices: 0, uniformsLocations: {} };
 
+        this.uniformsLocations = new Map<WebGLProgram, ProgramInfos>();
 
         this.numIndices = mesh.indices.length;
         this.positionMin = mesh.positionMin;
         this.positionMax = mesh.positionMax;
     }
-    computeUniformsLocations(gl: WebGL2RenderingContext, program: WebGLProgram): {
-        positionMin: WebGLUniformLocation | null;
-        positionMax: WebGLUniformLocation | null;
-        compressedData: number[];
-    } {
-        const uniformsLocations = {
-            positionMin: gl.getUniformLocation(program, 'uPositionMin'),
-            positionMax: gl.getUniformLocation(program, 'uPositionMax'),
-            compressedData: [] as number[]
-        };
 
-        for (let i = 0; i < 4; i++) {
-            const loc = gl.getAttribLocation(program, `aCompressedData${i}`);
-            uniformsLocations.compressedData.push(loc);
-        }
+    computeUniformsLocations(gl: WebGL2RenderingContext, program: WebGLProgram, commonUniformsNames: string[]): ProgramInfos {
+        const uniformsLocations = {
+            attributes: getAttributesLocations(gl, program, ['aCompressedData0', 'aCompressedData1', 'aCompressedData2', 'aCompressedData3']),
+            uniforms: getUniformsLocations(gl, program, ['uPositionMin', 'uPositionMax', ...commonUniformsNames])
+        };
 
         this.uniformsLocations.set(program, uniformsLocations);
         return uniformsLocations;
     }
 
-    bind(gl: WebGL2RenderingContext, program: WebGLProgram): number {
+    bind(gl: WebGL2RenderingContext, program: WebGLProgram, commonUniformsNames: string[]): { numIndices: number, uniformsLocations: { [key: string]: WebGLUniformLocation } } {
         // Set up vertex attributes for compressed data
         gl.bindBuffer(gl.ARRAY_BUFFER, this.buffers.data);
 
         // Use stored locations
         let uniformsLocations = this.uniformsLocations.get(program);
         if (!uniformsLocations) {
-            uniformsLocations = this.computeUniformsLocations(gl, program);
+            uniformsLocations = this.computeUniformsLocations(gl, program, commonUniformsNames);
+            this.uniformsLocations.set(program, uniformsLocations);
         }
 
         for (let i = 0; i < 4; i++) {
-            const loc = uniformsLocations.compressedData[i];
-            gl.enableVertexAttribArray(i);
+            const loc = uniformsLocations.attributes[`aCompressedData${i}`];
+            gl.enableVertexAttribArray(loc);
             gl.vertexAttribIPointer(loc, 2, gl.UNSIGNED_SHORT, 16, i * 4);
         }
 
         gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.buffers.index);
 
         // Set position bounds uniforms
-        gl.uniform3fv(uniformsLocations.positionMin, this.positionMin);
-        gl.uniform3fv(uniformsLocations.positionMax, this.positionMax);
+        gl.uniform3fv(uniformsLocations.uniforms['uPositionMin'], this.positionMin);
+        gl.uniform3fv(uniformsLocations.uniforms['uPositionMax'], this.positionMax);
 
-        return this.numIndices;
+        this.result.numIndices = this.numIndices;
+        this.result.uniformsLocations = uniformsLocations.uniforms;
+
+        return this.result;
     }
 
     cleanup(gl: WebGL2RenderingContext): void {

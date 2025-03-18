@@ -1,4 +1,4 @@
-import { mat4, vec3 } from 'gl-matrix';
+import { mat4, vec3, vec4 } from 'gl-matrix';
 import { Pane } from 'tweakpane';
 import { Mesh, ShapeType } from './mesh';
 import { GpuUncompressedMesh, GpuQuantizedMesh } from './gpu-mesh';
@@ -32,7 +32,6 @@ interface UIParams {
     displayMode: 'default' | 'normal' | 'tangent' | 'uv';
     zoom: number;
     version: string;
-    noTrig: boolean;
     quantizationFormat: QuantizationFormat;
 }
 
@@ -44,7 +43,6 @@ function getUrlParams(): Partial<UIParams> {
     const isPaused = params.get('isPaused');
     const displayMode = params.get('displayMode') as 'default' | 'normal' | 'tangent' | 'uv' | null;
     const zoom = params.get('zoom');
-    const noTrig = params.get('noTrig');
     const quantizationFormat = params.get('quantizationFormat') as QuantizationFormat | null;
 
     return {
@@ -54,7 +52,6 @@ function getUrlParams(): Partial<UIParams> {
         isPaused: isPaused ? isPaused === 'true' : undefined,
         displayMode: displayMode ?? 'default',
         zoom: zoom ? parseFloat(zoom) : undefined,
-        noTrig: noTrig ? noTrig === 'true' : undefined,
         quantizationFormat: quantizationFormat && Object.values(QuantizationFormat).includes(quantizationFormat) ? quantizationFormat : QuantizationFormat.Uncompressed
     };
 }
@@ -84,8 +81,10 @@ interface MeshState {
 function main() {
 
     // Let's test the encoding for a specific vertex (e.g., at lat=45°, lon=30°)
-    testTangentEncoding(vec3.fromValues(0.6124, 0.7071, 0.3536), vec3.fromValues(-0.5000, 0.0000, 0.8660), 1.0);
-
+    // @ts-ignore
+    window.testTangentEncoding = testTangentEncoding;
+    testTangentEncoding(vec3.fromValues(0.6124, 0.7071, 0.3536), vec4.fromValues(-0.5000, 0.0000, 0.8660, -1.0));
+    console.info('%cTest different encoding of tangents/normal with the function window.testTangentEncoding in the console eg: \nwindow.testTangentEncoding([0.6124, 0.7071, 0.3536], [0.5000, 0.0000, 0.8660, -1.0]);', 'color: #00EE00');
     const canvas = document.querySelector('canvas')!;
 
     const desiredWidth = 800;
@@ -116,7 +115,6 @@ function main() {
         displayMode: urlParams.displayMode ?? 'default',
         zoom: urlParams.zoom ?? 0.1,
         version: 'v2',
-        noTrig: urlParams.noTrig ?? true,
         quantizationFormat: urlParams.quantizationFormat ?? QuantizationFormat.Angle16Bits
     };
 
@@ -171,10 +169,6 @@ function main() {
         label: 'Rotation Speed'
     });
 
-    pane.addBinding(params, 'noTrig', {
-        label: 'No Trig'
-    });
-
     pane.addBinding(params, 'isPaused', {
         label: 'Pause'
     });
@@ -183,7 +177,7 @@ function main() {
         options: {
             'None': QuantizationFormat.Uncompressed,
             'Angle 16-bit': QuantizationFormat.Angle16Bits,
-            'Quaternion 12-bit': QuantizationFormat.Quaternion12Bits
+            'QTangent 12-bit': QuantizationFormat.Quaternion12Bits
         },
         label: 'Quantization Format'
     });
@@ -222,6 +216,17 @@ function main() {
     const modelViewMatrix = mat4.create();
     const projectionMatrix = mat4.create();
     const normalMatrix = mat4.create();
+
+    const commonUniforms = [
+        'uModelViewMatrix',
+        'uProjectionMatrix',
+        'uNormalMatrix',
+        'uLightPosition',
+        'uAlbedoMap',
+        'uNormalMap',
+        'uDisplayMode'
+    ];
+
 
     // Add buffer tracking
     const meshState: MeshState = {
@@ -305,7 +310,7 @@ function main() {
 
     async function render() {
         if (params.isPaused) {
-            requestAnimationFrame(() => render());
+            requestAnimationFrame(render);
             return;
         }
 
@@ -314,7 +319,7 @@ function main() {
         }
 
         if (!meshState.gpuUncompressedMesh && !meshState.gpuQuantizedMesh) {
-            requestAnimationFrame(() => render());
+            requestAnimationFrame(render);
             return;
         }
 
@@ -360,36 +365,39 @@ function main() {
         }
         gl.useProgram(program);
 
-        // Set uniforms
-        const mvLoc = gl.getUniformLocation(program, 'uModelViewMatrix');
-        const projLoc = gl.getUniformLocation(program, 'uProjectionMatrix');
-        const normalMatLoc = gl.getUniformLocation(program, 'uNormalMatrix');
-        const lightPosLoc = gl.getUniformLocation(program, 'uLightPosition');
-        const albedoLoc = gl.getUniformLocation(program, 'uAlbedoMap');
-        const normalMapLoc = gl.getUniformLocation(program, 'uNormalMap');
-        const displayModeLoc = gl.getUniformLocation(program, 'uDisplayMode');
+        // Set up and draw mesh
+        let indexCount: number;
+        let uniformsLocations: { [key: string]: WebGLUniformLocation };
+        if (useQuantizedMesh) {
+            if (!meshState.gpuQuantizedMesh) {
+                throw new Error('Quantized mesh not found');
+            }
+            const result = meshState.gpuQuantizedMesh.bind(gl, program, commonUniforms);
+            indexCount = result.numIndices;
+            uniformsLocations = result.uniformsLocations;
+        } else {
+            if (!meshState.gpuUncompressedMesh) {
+                throw new Error('Uncompressed mesh not found');
+            }
+            const result = meshState.gpuUncompressedMesh.bind(gl, program, commonUniforms);
+            indexCount = result.numIndices;
+            uniformsLocations = result.uniformsLocations;
+        }
 
-        gl.uniformMatrix4fv(mvLoc, false, modelViewMatrix);
-        gl.uniformMatrix4fv(projLoc, false, projectionMatrix);
-        gl.uniformMatrix4fv(normalMatLoc, false, normalMatrix);
-        gl.uniform1i(displayModeLoc, params.displayMode === 'normal' ? 1 : params.displayMode === 'tangent' ? 2 : params.displayMode === 'uv' ? 3 : 0);
-        gl.uniform3f(lightPosLoc, 2, 2, 2);
+        // Set uniforms
+        gl.uniformMatrix4fv(uniformsLocations['uModelViewMatrix'], false, modelViewMatrix);
+        gl.uniformMatrix4fv(uniformsLocations['uProjectionMatrix'], false, projectionMatrix);
+        gl.uniformMatrix4fv(uniformsLocations['uNormalMatrix'], false, normalMatrix);
+        gl.uniform1i(uniformsLocations['uDisplayMode'], params.displayMode === 'normal' ? 1 : params.displayMode === 'tangent' ? 2 : params.displayMode === 'uv' ? 3 : 0);
+        gl.uniform3f(uniformsLocations['uLightPosition'], 2, 2, 2);
+        gl.uniform1i(uniformsLocations['uAlbedoMap'], 0);
+        gl.uniform1i(uniformsLocations['uNormalMap'], 1);
 
         gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, albedoTexture);
-        gl.uniform1i(albedoLoc, 0);
 
         gl.activeTexture(gl.TEXTURE1);
         gl.bindTexture(gl.TEXTURE_2D, normalTexture);
-        gl.uniform1i(normalMapLoc, 1);
-
-        // Set up and draw mesh
-        let indexCount: number;
-        if (useQuantizedMesh) {
-            indexCount = meshState.gpuQuantizedMesh?.bind(gl, program) ?? 0;
-        } else {
-            indexCount = meshState.gpuUncompressedMesh?.bind(gl, program) ?? 0;
-        }
 
         if (indexCount > 0) {
             gl.drawElements(gl.TRIANGLES, indexCount, gl.UNSIGNED_INT, 0);
@@ -406,22 +414,11 @@ function main() {
             performance.updateDisplay(numVertices, numIndices / 3, vertexBytes, params.quantizationFormat, params.version);
         }
 
-        requestAnimationFrame(() => render());
+        requestAnimationFrame(render);
     }
 
     // Start the render loop
     render();
-
-    // Clean up resources when the page is unloaded
-    window.addEventListener('unload', () => {
-        if (meshState.gpuUncompressedMesh) {
-            meshState.gpuUncompressedMesh.cleanup(gl);
-        }
-        if (meshState.gpuQuantizedMesh) {
-            meshState.gpuQuantizedMesh.cleanup(gl);
-        }
-        performance.cleanup();
-    });
 }
 
 // const normalTest = vec3.fromValues(

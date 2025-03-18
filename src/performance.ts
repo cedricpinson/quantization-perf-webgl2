@@ -8,12 +8,6 @@ interface QueryInfo {
     frameId: number;
 }
 
-interface TimingResult {
-    name: string;
-    startTime: number;
-    endTime: number;
-}
-
 interface NamedMeasurements {
     [key: string]: number[]; // Just store the array of measurements
 }
@@ -22,6 +16,7 @@ export class PerformanceMonitor {
     stats: Stats;
     performanceDiv: HTMLDivElement;
     measurementTimes: NamedMeasurements = {};
+    averageTimeResults: { [key: string]: number } = {};
     readonly MEASUREMENT_BUFFER_SIZE = 100;
     lastDisplayUpdate = 0;
     readonly displayUpdateInterval = 1000; // 1 second
@@ -31,8 +26,6 @@ export class PerformanceMonitor {
     private queryPool: QueryInfo[] = [];
     private frameCount: number = 0;
     private readonly POOL_SIZE = 16;
-
-    currentFrameTimings: TimingResult[] = [];
 
     activeQuery: QueryInfo | null = null;
     gl: WebGL2RenderingContext;
@@ -82,7 +75,6 @@ export class PerformanceMonitor {
 
     beginFrame(): void {
         this.stats.begin();
-        this.currentFrameTimings = [];
 
         // Start first query without a name
         const newQuery = this.getQueryFromPool();
@@ -126,7 +118,7 @@ export class PerformanceMonitor {
 
     checkQueryResults(): void {
         if (!this.timerQueryExt) return;
-        this.gl.flush();
+        //this.gl.flush();
 
         // Check all active queries
         for (const queryInfo of this.queryPool) {
@@ -156,6 +148,7 @@ export class PerformanceMonitor {
         // Initialize array for this name if it doesn't exist
         if (!this.measurementTimes[name]) {
             this.measurementTimes[name] = new Array(this.MEASUREMENT_BUFFER_SIZE).fill(0);
+            this.averageTimeResults[name] = 0;
         }
 
         const index = this.frameCount % this.MEASUREMENT_BUFFER_SIZE;
@@ -168,11 +161,15 @@ export class PerformanceMonitor {
 
     updateDisplay(numVertices: number, numTriangles: number, vertexBytes: number, quantized: QuantizationFormat, version: string) {
         // Calculate averages for each named measurement
-        const averages = Object.entries(this.measurementTimes).map(([name, times]) => {
-            const sum = times.reduce((a, b) => a + b, 0);
+        for (const name in this.measurementTimes) {
+            const times = this.measurementTimes[name];
+            let sum = 0;
+            for (let i = 0; i < this.MEASUREMENT_BUFFER_SIZE; i++) {
+                sum += times[i];
+            }
             const avg = sum / this.MEASUREMENT_BUFFER_SIZE;
-            return `${name}: ${avg.toFixed(2)}ms`;
-        });
+            this.averageTimeResults[name] = avg;
+        }
 
         let format = '';
         switch (quantized) {
@@ -203,7 +200,7 @@ export class PerformanceMonitor {
             `Num Triangles: ${formattedTriangles}`,
             `Mesh Vertex memory usage: ${memoryUsage.toFixed(2)} MB`,
             `Mesh Indices memory usage: ${memoryUsageIndices.toFixed(2)} MB`,
-            ...averages,
+            ...Object.entries(this.averageTimeResults).map(([name, avg]) => `${name}: ${avg.toFixed(2)}ms`),
         ].join('<br>');
 
         this.lastDisplayUpdate = performance.now();
