@@ -1,6 +1,6 @@
 import { Mesh } from './mesh';
 import { vec3 } from 'gl-matrix';
-import { QuantizationFormat, quantizeStandard16bit, quantizeQuat12bit } from './quantize';
+import { QuantizationFormat, quantizeMeshAngle16Bits, quantizeMeshQuaternion12Bits } from './quantize';
 
 interface FaceData {
     start: number[];
@@ -242,12 +242,12 @@ self.onmessage = async (e: MessageEvent<FaceData>) => {
         let meshQuantized;
         switch (quantizationFormat) {
             case QuantizationFormat.Quaternion12Bits:
-                meshQuantized = quantizeQuat12bit(numVerticesPerFace, positions, normals, tangents, uvs, positionMin, positionMax);
+                meshQuantized = quantizeMeshQuaternion12Bits(numVerticesPerFace, positions, normals, tangents, uvs, positionMin, positionMax);
                 mesh.vertexBytes = 16;
                 break;
             case QuantizationFormat.Angle16Bits:
             default:
-                meshQuantized = quantizeStandard16bit(numVerticesPerFace, positions, normals, tangents, uvs, positionMin, positionMax);
+                meshQuantized = quantizeMeshAngle16Bits(numVerticesPerFace, positions, normals, tangents, uvs, positionMin, positionMax);
                 mesh.vertexBytes = 16;
                 break;
         }

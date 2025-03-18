@@ -59,3 +59,9 @@ https://www.jeremyong.com/graphics/2023/01/09/tangent-spaces-and-diamond-encodin
 - UVs: 2x16bits (quantized 0-1 range)
 
 Total: 8x16bits per vertex (16 bytes) vs 48 bytes for uncompressed format
+
+## Tangents & Direction
+* https://www.yosoygames.com.ar/wp/2018/03/vertex-formats-part-1-compression/
+* https://www.jeremyong.com/graphics/2023/01/09/tangent-spaces-and-diamond-encoding/
+* https://github.com/fuzhenn/tbn-packer
+* https://pdfs.semanticscholar.org/73b6/fa8f3ab6348975c3715c2f2d152f6b5c5296.pdf
